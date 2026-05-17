@@ -7,9 +7,11 @@ import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import { JenkinsClient } from './tools/jenkins.js';
 import { HomeAssistantClient } from './tools/homeassistant.js';
+import { PostgresClient } from './tools/postgres.js';
 
 const jenkins = new JenkinsClient();
 const ha = new HomeAssistantClient();
+const pg = new PostgresClient();
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -380,6 +382,248 @@ Tipos disponibles:
     ({ entity_id }) => ha.resetHomekitAccessory(entity_id)
   );
 
+  // ── PostgreSQL tools ─────────────────────────────────────────────────────────
+
+  tool(server, 'pg_connect',
+    `Registra una conexión PostgreSQL con un nombre para usarla en el resto de tools.
+Las credenciales se guardan solo en memoria y se pierden al reiniciar el server.
+Formato de URL: postgresql://usuario:contraseña@host:5432/base_de_datos`,
+    {
+      name: z.string().describe('Nombre para identificar esta conexión, ej: "produccion", "local"'),
+      connection_string: z.string().describe('URL de conexión PostgreSQL completa'),
+    },
+    ({ name, connection_string }) => pg.connect(name, connection_string)
+  );
+
+  tool(server, 'pg_disconnect',
+    'Cierra una conexión PostgreSQL registrada y libera sus recursos.',
+    {
+      name: z.string().describe('Nombre de la conexión a cerrar'),
+    },
+    ({ name }) => pg.disconnect(name)
+  );
+
+  tool(server, 'pg_list_connections',
+    'Lista las conexiones PostgreSQL activas (muestra la URL sin la contraseña).',
+    {},
+    () => pg.listConnections()
+  );
+
+  tool(server, 'pg_list_databases',
+    'Lista todas las bases de datos del servidor con su tamaño.',
+    {
+      connection: z.string().describe('Nombre de la conexión registrada con pg_connect'),
+    },
+    ({ connection }) => pg.listDatabases(connection)
+  );
+
+  tool(server, 'pg_list_schemas',
+    'Lista los schemas de la base de datos actual.',
+    {
+      connection: z.string().describe('Nombre de la conexión'),
+    },
+    ({ connection }) => pg.listSchemas(connection)
+  );
+
+  tool(server, 'pg_list_tables',
+    'Lista las tablas de un schema con su tamaño y número estimado de filas.',
+    {
+      connection: z.string().describe('Nombre de la conexión'),
+      schema: z.string().default('public').describe('Schema a explorar (default: public)'),
+    },
+    ({ connection, schema }) => pg.listTables(connection, schema ?? 'public')
+  );
+
+  tool(server, 'pg_describe_table',
+    'Describe una tabla: columnas, tipos, constraints, claves primarias y foráneas.',
+    {
+      connection: z.string().describe('Nombre de la conexión'),
+      table: z.string().describe('Nombre de la tabla'),
+      schema: z.string().default('public').describe('Schema (default: public)'),
+    },
+    ({ connection, table, schema }) => pg.describeTable(connection, table, schema ?? 'public')
+  );
+
+  tool(server, 'pg_list_indexes',
+    'Lista los índices de una tabla con su tipo y tamaño.',
+    {
+      connection: z.string().describe('Nombre de la conexión'),
+      table: z.string().describe('Nombre de la tabla'),
+      schema: z.string().default('public').describe('Schema (default: public)'),
+    },
+    ({ connection, table, schema }) => pg.listIndexes(connection, table, schema ?? 'public')
+  );
+
+  tool(server, 'pg_list_views',
+    'Lista las vistas de un schema.',
+    {
+      connection: z.string().describe('Nombre de la conexión'),
+      schema: z.string().default('public').describe('Schema (default: public)'),
+    },
+    ({ connection, schema }) => pg.listViews(connection, schema ?? 'public')
+  );
+
+  tool(server, 'pg_list_functions',
+    'Lista las funciones y procedimientos almacenados de un schema.',
+    {
+      connection: z.string().describe('Nombre de la conexión'),
+      schema: z.string().default('public').describe('Schema (default: public)'),
+    },
+    ({ connection, schema }) => pg.listFunctions(connection, schema ?? 'public')
+  );
+
+  tool(server, 'pg_list_users',
+    'Lista todos los roles y usuarios del servidor PostgreSQL.',
+    {
+      connection: z.string().describe('Nombre de la conexión'),
+    },
+    ({ connection }) => pg.listUsers(connection)
+  );
+
+  tool(server, 'pg_query',
+    'Ejecuta una consulta SELECT y devuelve los resultados (máximo 100 filas por default).',
+    {
+      connection: z.string().describe('Nombre de la conexión'),
+      sql: z.string().describe('Query SQL a ejecutar'),
+      limit: z.number().int().positive().default(100).describe('Máximo de filas a retornar'),
+    },
+    ({ connection, sql, limit }) => pg.runQuery(connection, sql, limit ?? 100)
+  );
+
+  tool(server, 'pg_execute',
+    'Ejecuta un statement SQL (INSERT, UPDATE, DELETE, ALTER, etc.) y retorna el resultado.',
+    {
+      connection: z.string().describe('Nombre de la conexión'),
+      sql: z.string().describe('Statement SQL a ejecutar'),
+    },
+    ({ connection, sql }) => pg.execute(connection, sql)
+  );
+
+  tool(server, 'pg_explain',
+    'Ejecuta EXPLAIN ANALYZE en una query para ver el plan de ejecución y tiempos reales.',
+    {
+      connection: z.string().describe('Nombre de la conexión'),
+      sql: z.string().describe('Query SQL a analizar'),
+    },
+    ({ connection, sql }) => pg.explain(connection, sql)
+  );
+
+  tool(server, 'pg_create_database',
+    'Crea una nueva base de datos.',
+    {
+      connection: z.string().describe('Nombre de la conexión'),
+      db_name: z.string().describe('Nombre de la nueva base de datos'),
+      owner: z.string().optional().describe('Propietario (opcional)'),
+    },
+    ({ connection, db_name, owner }) => pg.createDatabase(connection, db_name, owner)
+  );
+
+  tool(server, 'pg_create_schema',
+    'Crea un nuevo schema en la base de datos actual.',
+    {
+      connection: z.string().describe('Nombre de la conexión'),
+      schema_name: z.string().describe('Nombre del schema'),
+      owner: z.string().optional().describe('Propietario (opcional)'),
+    },
+    ({ connection, schema_name, owner }) => pg.createSchema(connection, schema_name, owner)
+  );
+
+  tool(server, 'pg_create_table',
+    `Crea una tabla con las columnas especificadas.
+Ejemplo de columnas:
+[
+  {"name": "id", "type": "SERIAL", "primary_key": true},
+  {"name": "email", "type": "VARCHAR(255)", "nullable": false, "unique": true},
+  {"name": "created_at", "type": "TIMESTAMPTZ", "nullable": false, "default": "NOW()"}
+]`,
+    {
+      connection: z.string().describe('Nombre de la conexión'),
+      table: z.string().describe('Nombre de la tabla'),
+      schema: z.string().default('public').describe('Schema (default: public)'),
+      columns: z.array(z.object({
+        name: z.string(),
+        type: z.string(),
+        nullable: z.boolean().optional(),
+        primary_key: z.boolean().optional(),
+        unique: z.boolean().optional(),
+        default: z.string().optional(),
+      })).describe('Definición de columnas'),
+    },
+    ({ connection, table, schema, columns }) => pg.createTable(connection, table, columns, schema ?? 'public')
+  );
+
+  tool(server, 'pg_drop_table',
+    'Elimina una tabla. Usar cascade=true para eliminar también objetos dependientes.',
+    {
+      connection: z.string().describe('Nombre de la conexión'),
+      table: z.string().describe('Nombre de la tabla'),
+      schema: z.string().default('public').describe('Schema (default: public)'),
+      cascade: z.boolean().default(false).describe('true para CASCADE, false para RESTRICT'),
+    },
+    ({ connection, table, schema, cascade }) => pg.dropTable(connection, table, schema ?? 'public', cascade ?? false)
+  );
+
+  tool(server, 'pg_running_queries',
+    'Muestra las queries en ejecución actualmente con su duración y estado.',
+    {
+      connection: z.string().describe('Nombre de la conexión'),
+    },
+    ({ connection }) => pg.runningQueries(connection)
+  );
+
+  tool(server, 'pg_kill_query',
+    'Termina un proceso/query de PostgreSQL por su PID.',
+    {
+      connection: z.string().describe('Nombre de la conexión'),
+      pid: z.number().int().describe('PID del proceso a terminar (obtenlo con pg_running_queries)'),
+    },
+    ({ connection, pid }) => pg.killQuery(connection, pid)
+  );
+
+  tool(server, 'pg_table_stats',
+    'Estadísticas de tablas: filas vivas/muertas, último vacuum/analyze, tamaño.',
+    {
+      connection: z.string().describe('Nombre de la conexión'),
+      schema: z.string().default('public').describe('Schema (default: public)'),
+    },
+    ({ connection, schema }) => pg.tableStats(connection, schema ?? 'public')
+  );
+
+  tool(server, 'pg_health_check',
+    'Resumen de salud del servidor: conexiones activas, cache hit ratio, tablas con bloat.',
+    {
+      connection: z.string().describe('Nombre de la conexión'),
+    },
+    ({ connection }) => pg.healthCheck(connection)
+  );
+
+  tool(server, 'pg_er_diagram',
+    'Genera un diagrama ER en texto con las tablas y relaciones (foreign keys) de un schema.',
+    {
+      connection: z.string().describe('Nombre de la conexión'),
+      schema: z.string().default('public').describe('Schema (default: public)'),
+    },
+    ({ connection, schema }) => pg.erDiagram(connection, schema ?? 'public')
+  );
+
+  tool(server, 'pg_dump_schema',
+    'Genera el DDL completo (CREATE TABLE, CREATE VIEW, etc.) de un schema como texto SQL.',
+    {
+      connection: z.string().describe('Nombre de la conexión'),
+      schema: z.string().default('public').describe('Schema a exportar (default: public)'),
+    },
+    ({ connection, schema }) => pg.dumpSchema(connection, schema ?? 'public')
+  );
+
+  tool(server, 'pg_suggest_indexes',
+    'Analiza el uso de tablas e identifica: tablas sin índices con muchos seq scans e índices existentes sin uso.',
+    {
+      connection: z.string().describe('Nombre de la conexión'),
+      schema: z.string().default('public').describe('Schema a analizar (default: public)'),
+    },
+    ({ connection, schema }) => pg.suggestIndexes(connection, schema ?? 'public')
+  );
+
   return server;
 }
 
@@ -394,6 +638,7 @@ app.use(express.json());
 
 const JENKINS_TOOLS = 18;
 const HA_TOOLS = 24;
+const PG_TOOLS = 22;
 
 app.get('/', (_req, res) => {
   res.json({
@@ -401,7 +646,7 @@ app.get('/', (_req, res) => {
     version: '2.0.0',
     transport: 'StreamableHTTP',
     endpoint: '/mcp',
-    tools: { jenkins: JENKINS_TOOLS, homeassistant: HA_TOOLS, total: JENKINS_TOOLS + HA_TOOLS },
+    tools: { jenkins: JENKINS_TOOLS, homeassistant: HA_TOOLS, postgres: PG_TOOLS, total: JENKINS_TOOLS + HA_TOOLS + PG_TOOLS },
     config: {
       jenkins: process.env.JENKINS_URL || 'not configured',
       homeassistant: process.env.HA_URL || 'not configured',
@@ -465,7 +710,7 @@ app.listen(PORT, HOST, () => {
   console.log(`\n✅ MCP Local Network Admin v2.0.0`);
   console.log(`   Endpoint MCP:   http://localhost:${PORT}/mcp`);
   console.log(`   Health check:   http://localhost:${PORT}/`);
-  console.log(`   Tools:          ${JENKINS_TOOLS} Jenkins + ${HA_TOOLS} Home Assistant = ${JENKINS_TOOLS + HA_TOOLS} total`);
+  console.log(`   Tools:          ${JENKINS_TOOLS} Jenkins + ${HA_TOOLS} Home Assistant + ${PG_TOOLS} PostgreSQL = ${JENKINS_TOOLS + HA_TOOLS + PG_TOOLS} total`);
   console.log(`   Jenkins:        ${process.env.JENKINS_URL || '⚠️  no configurado (JENKINS_URL)'}`);
   console.log(`   Home Assistant: ${process.env.HA_URL || '⚠️  no configurado (HA_URL)'}\n`);
   console.log(`   Agregar a Claude Code:`);
