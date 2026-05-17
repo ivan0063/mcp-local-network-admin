@@ -8,10 +8,12 @@ import { z } from 'zod';
 import { JenkinsClient } from './tools/jenkins.js';
 import { HomeAssistantClient } from './tools/homeassistant.js';
 import { PostgresClient } from './tools/postgres.js';
+import { DockerClient } from './tools/docker.js';
 
 const jenkins = new JenkinsClient();
 const ha = new HomeAssistantClient();
 const pg = new PostgresClient();
+const docker = new DockerClient();
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -681,6 +683,201 @@ Ejemplo de columnas:
     ({ connection, schema }) => pg.suggestIndexes(connection, schema ?? 'public')
   );
 
+  // ── Docker tools ─────────────────────────────────────────────────────────────
+
+  const conn = z.string().default('local').describe('Nombre de la conexión (default: "local"). Usa docker_connect para agregar servidores remotos.');
+
+  tool(server, 'docker_connect',
+    `Conecta a un servidor Docker remoto vía su API REST y lo registra con un nombre.
+La conexión queda disponible para el resto de tools usando ese nombre.
+
+Para exponer la API REST en un lab server Linux:
+  Editar /lib/systemd/system/docker.service, agregar a ExecStart:
+  -H tcp://0.0.0.0:2375 -H unix:///var/run/docker.sock
+  Luego: systemctl daemon-reload && systemctl restart docker`,
+    {
+      name: z.string().describe('Nombre para identificar este servidor, ej: "lab1", "pi4", "nas"'),
+      host: z.string().describe('IP o hostname del servidor Docker, ej: "192.168.1.100"'),
+      port: z.number().int().default(2375).describe('Puerto de la API REST (default: 2375)'),
+      protocol: z.enum(['http', 'https']).default('http').describe('Protocolo (default: http)'),
+    },
+    ({ name, host, port, protocol }) => docker.connect(name, host, port ?? 2375, protocol ?? 'http')
+  );
+
+  tool(server, 'docker_disconnect',
+    'Desregistra una conexión Docker remota. La conexión "local" no puede eliminarse.',
+    {
+      name: z.string().describe('Nombre de la conexión a eliminar'),
+    },
+    ({ name }) => docker.disconnect(name)
+  );
+
+  tool(server, 'docker_list_connections',
+    'Lista todas las conexiones Docker registradas (local + remotas).',
+    {},
+    () => docker.listConnections()
+  );
+
+  tool(server, 'docker_system_info',
+    'Muestra información del daemon Docker: versión, OS, CPUs, memoria, contenedores e imágenes.',
+    { connection: conn },
+    ({ connection }) => docker.systemInfo(connection ?? 'local')
+  );
+
+  tool(server, 'docker_list_images',
+    'Lista las imágenes Docker con sus tags, tamaño y fecha de creación.',
+    { connection: conn },
+    ({ connection }) => docker.listImages(connection ?? 'local')
+  );
+
+  tool(server, 'docker_pull_image',
+    'Descarga una imagen desde el registry. Ej: nginx:latest, postgres:16-alpine.',
+    {
+      image: z.string().describe('Imagen a descargar, ej: "nginx:latest"'),
+      connection: conn,
+    },
+    ({ image, connection }) => docker.pullImage(image, connection ?? 'local')
+  );
+
+  tool(server, 'docker_remove_image',
+    'Elimina una imagen Docker por su ID o tag.',
+    {
+      image_id: z.string().describe('ID o tag de la imagen'),
+      force: z.boolean().default(false).describe('true para forzar aunque haya contenedores usando la imagen'),
+      connection: conn,
+    },
+    ({ image_id, force, connection }) => docker.removeImage(image_id, force ?? false, connection ?? 'local')
+  );
+
+  tool(server, 'docker_purge_images',
+    `Limpia imágenes históricas para liberar espacio en disco.
+- dangling: elimina solo imágenes sin tag (<none>:<none>) — capas huérfanas de builds
+- unused: elimina todas las imágenes no usadas por ningún contenedor activo (más agresivo)`,
+    {
+      mode: z.enum(['dangling', 'unused']).default('dangling').describe('dangling = capas huérfanas | unused = todas las no usadas'),
+      connection: conn,
+    },
+    ({ mode, connection }) => docker.purgeImages(mode ?? 'dangling', connection ?? 'local')
+  );
+
+  tool(server, 'docker_list_containers',
+    'Lista todos los contenedores (corriendo y detenidos) con estado, imagen y puertos.',
+    {
+      all: z.boolean().default(true).describe('true para incluir detenidos (default: true)'),
+      connection: conn,
+    },
+    ({ all, connection }) => docker.listContainers(all ?? true, connection ?? 'local')
+  );
+
+  tool(server, 'docker_inspect_container',
+    'Muestra información detallada de un contenedor: env vars, puertos, volúmenes, red, restart policy.',
+    {
+      name_or_id: z.string().describe('Nombre o ID del contenedor'),
+      connection: conn,
+    },
+    ({ name_or_id, connection }) => docker.inspectContainer(name_or_id, connection ?? 'local')
+  );
+
+  tool(server, 'docker_start_container',
+    'Inicia un contenedor detenido.',
+    {
+      name_or_id: z.string().describe('Nombre o ID del contenedor'),
+      connection: conn,
+    },
+    ({ name_or_id, connection }) => docker.startContainer(name_or_id, connection ?? 'local')
+  );
+
+  tool(server, 'docker_stop_container',
+    'Detiene un contenedor en ejecución.',
+    {
+      name_or_id: z.string().describe('Nombre o ID del contenedor'),
+      timeout: z.number().int().positive().default(10).describe('Segundos antes de SIGKILL (default: 10)'),
+      connection: conn,
+    },
+    ({ name_or_id, timeout, connection }) => docker.stopContainer(name_or_id, timeout ?? 10, connection ?? 'local')
+  );
+
+  tool(server, 'docker_restart_container',
+    'Reinicia un contenedor.',
+    {
+      name_or_id: z.string().describe('Nombre o ID del contenedor'),
+      timeout: z.number().int().positive().default(10).describe('Segundos antes de SIGKILL (default: 10)'),
+      connection: conn,
+    },
+    ({ name_or_id, timeout, connection }) => docker.restartContainer(name_or_id, timeout ?? 10, connection ?? 'local')
+  );
+
+  tool(server, 'docker_remove_container',
+    'Elimina un contenedor. force=true para eliminar aunque esté corriendo.',
+    {
+      name_or_id: z.string().describe('Nombre o ID del contenedor'),
+      force: z.boolean().default(false).describe('true para forzar eliminación aunque esté corriendo'),
+      connection: conn,
+    },
+    ({ name_or_id, force, connection }) => docker.removeContainer(name_or_id, force ?? false, connection ?? 'local')
+  );
+
+  tool(server, 'docker_container_logs',
+    'Obtiene los últimos N logs de un contenedor con timestamps.',
+    {
+      name_or_id: z.string().describe('Nombre o ID del contenedor'),
+      lines: z.number().int().positive().default(100).describe('Líneas a retornar (default: 100)'),
+      connection: conn,
+    },
+    ({ name_or_id, lines, connection }) => docker.containerLogs(name_or_id, lines ?? 100, connection ?? 'local')
+  );
+
+  tool(server, 'docker_container_stats',
+    'Muestra el uso actual de CPU, memoria y red de un contenedor.',
+    {
+      name_or_id: z.string().describe('Nombre o ID del contenedor'),
+      connection: conn,
+    },
+    ({ name_or_id, connection }) => docker.containerStats(name_or_id, connection ?? 'local')
+  );
+
+  tool(server, 'docker_compose_up',
+    `Crea y levanta un stack desde un YAML de docker-compose pasado como string.
+Para servidores remotos, usa el parámetro host directamente (no necesita docker_connect).
+
+Ejemplo de compose_yaml:
+  services:
+    web:
+      image: nginx:latest
+      ports:
+        - "8080:80"
+      restart: unless-stopped`,
+    {
+      project_name: z.string().describe('Nombre del proyecto compose'),
+      compose_yaml: z.string().describe('Contenido completo del docker-compose.yml'),
+      pull: z.boolean().default(false).describe('Pull de imágenes antes de levantar'),
+      build: z.boolean().default(false).describe('Rebuild de imágenes con build context'),
+      host: z.string().optional().describe('IP del servidor remoto (opcional, omitir para local)'),
+      port: z.number().int().default(2375).describe('Puerto Docker del servidor remoto (default: 2375)'),
+    },
+    ({ project_name, compose_yaml, pull, build, host, port }) =>
+      docker.composeUp(project_name, compose_yaml, { pull: pull ?? false, build: build ?? false, host, port: port ?? 2375 })
+  );
+
+  tool(server, 'docker_compose_down',
+    'Detiene y elimina los contenedores de un stack compose por su nombre de proyecto.',
+    {
+      project_name: z.string().describe('Nombre del proyecto compose'),
+      remove_volumes: z.boolean().default(false).describe('Eliminar también los volúmenes del stack'),
+      remove_images: z.boolean().default(false).describe('Eliminar también las imágenes usadas'),
+      host: z.string().optional().describe('IP del servidor remoto (opcional, omitir para local)'),
+      port: z.number().int().default(2375).describe('Puerto Docker del servidor remoto (default: 2375)'),
+    },
+    ({ project_name, remove_volumes, remove_images, host, port }) =>
+      docker.composeDown(project_name, { removeVolumes: remove_volumes ?? false, removeImages: remove_images ?? false, host, port: port ?? 2375 })
+  );
+
+  tool(server, 'docker_list_compose_stacks',
+    'Lista los stacks de docker compose activos con sus servicios y estado.',
+    { connection: conn },
+    ({ connection }) => docker.listComposeStacks(connection ?? 'local')
+  );
+
   return server;
 }
 
@@ -696,6 +893,7 @@ app.use(express.json());
 const JENKINS_TOOLS = 20;
 const HA_TOOLS = 24;
 const PG_TOOLS = 22;
+const DOCKER_TOOLS = 19;
 
 app.get('/', (_req, res) => {
   res.json({
@@ -703,7 +901,7 @@ app.get('/', (_req, res) => {
     version: '2.0.0',
     transport: 'StreamableHTTP',
     endpoint: '/mcp',
-    tools: { jenkins: JENKINS_TOOLS, homeassistant: HA_TOOLS, postgres: PG_TOOLS, total: JENKINS_TOOLS + HA_TOOLS + PG_TOOLS },
+    tools: { jenkins: JENKINS_TOOLS, homeassistant: HA_TOOLS, postgres: PG_TOOLS, docker: DOCKER_TOOLS, total: JENKINS_TOOLS + HA_TOOLS + PG_TOOLS + DOCKER_TOOLS },
     config: {
       jenkins: process.env.JENKINS_URL || 'not configured',
       homeassistant: process.env.HA_URL || 'not configured',
@@ -767,7 +965,7 @@ app.listen(PORT, HOST, () => {
   console.log(`\n✅ MCP Local Network Admin v2.0.0`);
   console.log(`   Endpoint MCP:   http://localhost:${PORT}/mcp`);
   console.log(`   Health check:   http://localhost:${PORT}/`);
-  console.log(`   Tools:          ${JENKINS_TOOLS} Jenkins + ${HA_TOOLS} Home Assistant + ${PG_TOOLS} PostgreSQL = ${JENKINS_TOOLS + HA_TOOLS + PG_TOOLS} total`);
+  console.log(`   Tools:          ${JENKINS_TOOLS} Jenkins + ${HA_TOOLS} Home Assistant + ${PG_TOOLS} PostgreSQL + ${DOCKER_TOOLS} Docker = ${JENKINS_TOOLS + HA_TOOLS + PG_TOOLS + DOCKER_TOOLS} total`);
   console.log(`   Jenkins:        ${process.env.JENKINS_URL || '⚠️  no configurado (JENKINS_URL)'}`);
   console.log(`   Home Assistant: ${process.env.HA_URL || '⚠️  no configurado (HA_URL)'}\n`);
   console.log(`   Agregar a Claude Code:`);
