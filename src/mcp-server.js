@@ -8,10 +8,12 @@ import { z } from 'zod';
 import { JenkinsClient } from './tools/jenkins.js';
 import { HomeAssistantClient } from './tools/homeassistant.js';
 import { PostgresClient } from './tools/postgres.js';
+import { DockerClient } from './tools/docker.js';
 
 const jenkins = new JenkinsClient();
 const ha = new HomeAssistantClient();
 const pg = new PostgresClient();
+const docker = new DockerClient();
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -681,6 +683,155 @@ Ejemplo de columnas:
     ({ connection, schema }) => pg.suggestIndexes(connection, schema ?? 'public')
   );
 
+  // ── Docker tools ─────────────────────────────────────────────────────────────
+
+  tool(server, 'docker_system_info',
+    'Muestra información general del daemon Docker: versión, OS, CPUs, memoria, número de contenedores e imágenes.',
+    {},
+    () => docker.systemInfo()
+  );
+
+  tool(server, 'docker_list_images',
+    'Lista todas las imágenes Docker locales con sus tags, tamaño y fecha de creación.',
+    {},
+    () => docker.listImages()
+  );
+
+  tool(server, 'docker_pull_image',
+    'Descarga una imagen desde el registry. Incluye el tag, ej: nginx:latest, postgres:16-alpine.',
+    {
+      image: z.string().describe('Imagen a descargar, ej: "nginx:latest", "node:18-alpine"'),
+    },
+    ({ image }) => docker.pullImage(image)
+  );
+
+  tool(server, 'docker_remove_image',
+    'Elimina una imagen Docker por su ID o tag.',
+    {
+      image_id: z.string().describe('ID o tag de la imagen a eliminar'),
+      force: z.boolean().default(false).describe('true para forzar aunque haya contenedores usando la imagen'),
+    },
+    ({ image_id, force }) => docker.removeImage(image_id, force ?? false)
+  );
+
+  tool(server, 'docker_purge_images',
+    `Limpia imágenes históricas para liberar espacio en disco.
+Modos:
+- dangling: elimina solo imágenes sin tag (<none>:<none>) — capas huérfanas de builds
+- unused: elimina todas las imágenes no usadas por ningún contenedor activo (más agresivo)`,
+    {
+      mode: z.enum(['dangling', 'unused']).default('dangling').describe('dangling = solo sin tag | unused = todas las no usadas'),
+    },
+    ({ mode }) => docker.purgeImages(mode ?? 'dangling')
+  );
+
+  tool(server, 'docker_list_containers',
+    'Lista todos los contenedores (corriendo y detenidos) con su estado, imagen y puertos.',
+    {
+      all: z.boolean().default(true).describe('true para incluir contenedores detenidos (default: true)'),
+    },
+    ({ all }) => docker.listContainers(all ?? true)
+  );
+
+  tool(server, 'docker_inspect_container',
+    'Muestra información detallada de un contenedor: variables de entorno, puertos, volúmenes, red, restart policy.',
+    {
+      name_or_id: z.string().describe('Nombre o ID del contenedor'),
+    },
+    ({ name_or_id }) => docker.inspectContainer(name_or_id)
+  );
+
+  tool(server, 'docker_start_container',
+    'Inicia un contenedor detenido.',
+    {
+      name_or_id: z.string().describe('Nombre o ID del contenedor'),
+    },
+    ({ name_or_id }) => docker.startContainer(name_or_id)
+  );
+
+  tool(server, 'docker_stop_container',
+    'Detiene un contenedor en ejecución.',
+    {
+      name_or_id: z.string().describe('Nombre o ID del contenedor'),
+      timeout: z.number().int().positive().default(10).describe('Segundos de espera antes de SIGKILL (default: 10)'),
+    },
+    ({ name_or_id, timeout }) => docker.stopContainer(name_or_id, timeout ?? 10)
+  );
+
+  tool(server, 'docker_restart_container',
+    'Reinicia un contenedor.',
+    {
+      name_or_id: z.string().describe('Nombre o ID del contenedor'),
+      timeout: z.number().int().positive().default(10).describe('Segundos de espera antes de SIGKILL (default: 10)'),
+    },
+    ({ name_or_id, timeout }) => docker.restartContainer(name_or_id, timeout ?? 10)
+  );
+
+  tool(server, 'docker_remove_container',
+    'Elimina un contenedor. Usa force=true para eliminar aunque esté corriendo.',
+    {
+      name_or_id: z.string().describe('Nombre o ID del contenedor'),
+      force: z.boolean().default(false).describe('true para forzar eliminación aunque esté corriendo'),
+    },
+    ({ name_or_id, force }) => docker.removeContainer(name_or_id, force ?? false)
+  );
+
+  tool(server, 'docker_container_logs',
+    'Obtiene los últimos N logs de un contenedor con timestamps.',
+    {
+      name_or_id: z.string().describe('Nombre o ID del contenedor'),
+      lines: z.number().int().positive().default(100).describe('Número de líneas a retornar (default: 100)'),
+    },
+    ({ name_or_id, lines }) => docker.containerLogs(name_or_id, lines ?? 100)
+  );
+
+  tool(server, 'docker_container_stats',
+    'Muestra el uso actual de CPU, memoria y red de un contenedor.',
+    {
+      name_or_id: z.string().describe('Nombre o ID del contenedor'),
+    },
+    ({ name_or_id }) => docker.containerStats(name_or_id)
+  );
+
+  tool(server, 'docker_compose_up',
+    `Crea y levanta un stack de contenedores desde un YAML de docker-compose.
+El YAML se pasa como string directamente — no hace falta un archivo en disco.
+Requiere docker compose CLI disponible en el host.
+
+Ejemplo de compose_yaml:
+  services:
+    web:
+      image: nginx:latest
+      ports:
+        - "8080:80"
+      restart: unless-stopped`,
+    {
+      project_name: z.string().describe('Nombre del proyecto compose (identifica el stack)'),
+      compose_yaml: z.string().describe('Contenido completo del docker-compose.yml como string'),
+      pull: z.boolean().default(false).describe('true para hacer pull de las imágenes antes de levantar'),
+      build: z.boolean().default(false).describe('true para rebuild de imágenes con build context'),
+    },
+    ({ project_name, compose_yaml, pull, build }) =>
+      docker.composeUp(project_name, compose_yaml, { pull: pull ?? false, build: build ?? false })
+  );
+
+  tool(server, 'docker_compose_down',
+    'Detiene y elimina los contenedores de un stack compose por su nombre de proyecto.',
+    {
+      project_name: z.string().describe('Nombre del proyecto compose (el mismo usado en docker_compose_up)'),
+      remove_volumes: z.boolean().default(false).describe('true para eliminar también los volúmenes del stack'),
+      remove_images: z.boolean().default(false).describe('true para eliminar también las imágenes usadas'),
+    },
+    ({ project_name, remove_volumes, remove_images }) =>
+      docker.composeDown(project_name, { removeVolumes: remove_volumes ?? false, removeImages: remove_images ?? false })
+  );
+
+  tool(server, 'docker_list_compose_stacks',
+    'Lista los stacks de docker compose activos en el sistema con sus servicios y estado.',
+    {},
+    () => docker.listComposeStacks()
+  );
+
   return server;
 }
 
@@ -696,6 +847,7 @@ app.use(express.json());
 const JENKINS_TOOLS = 20;
 const HA_TOOLS = 24;
 const PG_TOOLS = 22;
+const DOCKER_TOOLS = 15;
 
 app.get('/', (_req, res) => {
   res.json({
@@ -703,7 +855,7 @@ app.get('/', (_req, res) => {
     version: '2.0.0',
     transport: 'StreamableHTTP',
     endpoint: '/mcp',
-    tools: { jenkins: JENKINS_TOOLS, homeassistant: HA_TOOLS, postgres: PG_TOOLS, total: JENKINS_TOOLS + HA_TOOLS + PG_TOOLS },
+    tools: { jenkins: JENKINS_TOOLS, homeassistant: HA_TOOLS, postgres: PG_TOOLS, docker: DOCKER_TOOLS, total: JENKINS_TOOLS + HA_TOOLS + PG_TOOLS + DOCKER_TOOLS },
     config: {
       jenkins: process.env.JENKINS_URL || 'not configured',
       homeassistant: process.env.HA_URL || 'not configured',
@@ -767,7 +919,7 @@ app.listen(PORT, HOST, () => {
   console.log(`\n✅ MCP Local Network Admin v2.0.0`);
   console.log(`   Endpoint MCP:   http://localhost:${PORT}/mcp`);
   console.log(`   Health check:   http://localhost:${PORT}/`);
-  console.log(`   Tools:          ${JENKINS_TOOLS} Jenkins + ${HA_TOOLS} Home Assistant + ${PG_TOOLS} PostgreSQL = ${JENKINS_TOOLS + HA_TOOLS + PG_TOOLS} total`);
+  console.log(`   Tools:          ${JENKINS_TOOLS} Jenkins + ${HA_TOOLS} Home Assistant + ${PG_TOOLS} PostgreSQL + ${DOCKER_TOOLS} Docker = ${JENKINS_TOOLS + HA_TOOLS + PG_TOOLS + DOCKER_TOOLS} total`);
   console.log(`   Jenkins:        ${process.env.JENKINS_URL || '⚠️  no configurado (JENKINS_URL)'}`);
   console.log(`   Home Assistant: ${process.env.HA_URL || '⚠️  no configurado (HA_URL)'}\n`);
   console.log(`   Agregar a Claude Code:`);
