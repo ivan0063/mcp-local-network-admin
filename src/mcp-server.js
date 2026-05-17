@@ -685,118 +685,160 @@ Ejemplo de columnas:
 
   // ── Docker tools ─────────────────────────────────────────────────────────────
 
-  tool(server, 'docker_system_info',
-    'Muestra información general del daemon Docker: versión, OS, CPUs, memoria, número de contenedores e imágenes.',
+  const conn = z.string().default('local').describe('Nombre de la conexión (default: "local"). Usa docker_connect para agregar servidores remotos.');
+
+  tool(server, 'docker_connect',
+    `Conecta a un servidor Docker remoto vía su API REST y lo registra con un nombre.
+La conexión queda disponible para el resto de tools usando ese nombre.
+
+Para exponer la API REST en un lab server Linux:
+  Editar /lib/systemd/system/docker.service, agregar a ExecStart:
+  -H tcp://0.0.0.0:2375 -H unix:///var/run/docker.sock
+  Luego: systemctl daemon-reload && systemctl restart docker`,
+    {
+      name: z.string().describe('Nombre para identificar este servidor, ej: "lab1", "pi4", "nas"'),
+      host: z.string().describe('IP o hostname del servidor Docker, ej: "192.168.1.100"'),
+      port: z.number().int().default(2375).describe('Puerto de la API REST (default: 2375)'),
+      protocol: z.enum(['http', 'https']).default('http').describe('Protocolo (default: http)'),
+    },
+    ({ name, host, port, protocol }) => docker.connect(name, host, port ?? 2375, protocol ?? 'http')
+  );
+
+  tool(server, 'docker_disconnect',
+    'Desregistra una conexión Docker remota. La conexión "local" no puede eliminarse.',
+    {
+      name: z.string().describe('Nombre de la conexión a eliminar'),
+    },
+    ({ name }) => docker.disconnect(name)
+  );
+
+  tool(server, 'docker_list_connections',
+    'Lista todas las conexiones Docker registradas (local + remotas).',
     {},
-    () => docker.systemInfo()
+    () => docker.listConnections()
+  );
+
+  tool(server, 'docker_system_info',
+    'Muestra información del daemon Docker: versión, OS, CPUs, memoria, contenedores e imágenes.',
+    { connection: conn },
+    ({ connection }) => docker.systemInfo(connection ?? 'local')
   );
 
   tool(server, 'docker_list_images',
-    'Lista todas las imágenes Docker locales con sus tags, tamaño y fecha de creación.',
-    {},
-    () => docker.listImages()
+    'Lista las imágenes Docker con sus tags, tamaño y fecha de creación.',
+    { connection: conn },
+    ({ connection }) => docker.listImages(connection ?? 'local')
   );
 
   tool(server, 'docker_pull_image',
-    'Descarga una imagen desde el registry. Incluye el tag, ej: nginx:latest, postgres:16-alpine.',
+    'Descarga una imagen desde el registry. Ej: nginx:latest, postgres:16-alpine.',
     {
-      image: z.string().describe('Imagen a descargar, ej: "nginx:latest", "node:18-alpine"'),
+      image: z.string().describe('Imagen a descargar, ej: "nginx:latest"'),
+      connection: conn,
     },
-    ({ image }) => docker.pullImage(image)
+    ({ image, connection }) => docker.pullImage(image, connection ?? 'local')
   );
 
   tool(server, 'docker_remove_image',
     'Elimina una imagen Docker por su ID o tag.',
     {
-      image_id: z.string().describe('ID o tag de la imagen a eliminar'),
+      image_id: z.string().describe('ID o tag de la imagen'),
       force: z.boolean().default(false).describe('true para forzar aunque haya contenedores usando la imagen'),
+      connection: conn,
     },
-    ({ image_id, force }) => docker.removeImage(image_id, force ?? false)
+    ({ image_id, force, connection }) => docker.removeImage(image_id, force ?? false, connection ?? 'local')
   );
 
   tool(server, 'docker_purge_images',
     `Limpia imágenes históricas para liberar espacio en disco.
-Modos:
 - dangling: elimina solo imágenes sin tag (<none>:<none>) — capas huérfanas de builds
 - unused: elimina todas las imágenes no usadas por ningún contenedor activo (más agresivo)`,
     {
-      mode: z.enum(['dangling', 'unused']).default('dangling').describe('dangling = solo sin tag | unused = todas las no usadas'),
+      mode: z.enum(['dangling', 'unused']).default('dangling').describe('dangling = capas huérfanas | unused = todas las no usadas'),
+      connection: conn,
     },
-    ({ mode }) => docker.purgeImages(mode ?? 'dangling')
+    ({ mode, connection }) => docker.purgeImages(mode ?? 'dangling', connection ?? 'local')
   );
 
   tool(server, 'docker_list_containers',
-    'Lista todos los contenedores (corriendo y detenidos) con su estado, imagen y puertos.',
+    'Lista todos los contenedores (corriendo y detenidos) con estado, imagen y puertos.',
     {
-      all: z.boolean().default(true).describe('true para incluir contenedores detenidos (default: true)'),
+      all: z.boolean().default(true).describe('true para incluir detenidos (default: true)'),
+      connection: conn,
     },
-    ({ all }) => docker.listContainers(all ?? true)
+    ({ all, connection }) => docker.listContainers(all ?? true, connection ?? 'local')
   );
 
   tool(server, 'docker_inspect_container',
-    'Muestra información detallada de un contenedor: variables de entorno, puertos, volúmenes, red, restart policy.',
+    'Muestra información detallada de un contenedor: env vars, puertos, volúmenes, red, restart policy.',
     {
       name_or_id: z.string().describe('Nombre o ID del contenedor'),
+      connection: conn,
     },
-    ({ name_or_id }) => docker.inspectContainer(name_or_id)
+    ({ name_or_id, connection }) => docker.inspectContainer(name_or_id, connection ?? 'local')
   );
 
   tool(server, 'docker_start_container',
     'Inicia un contenedor detenido.',
     {
       name_or_id: z.string().describe('Nombre o ID del contenedor'),
+      connection: conn,
     },
-    ({ name_or_id }) => docker.startContainer(name_or_id)
+    ({ name_or_id, connection }) => docker.startContainer(name_or_id, connection ?? 'local')
   );
 
   tool(server, 'docker_stop_container',
     'Detiene un contenedor en ejecución.',
     {
       name_or_id: z.string().describe('Nombre o ID del contenedor'),
-      timeout: z.number().int().positive().default(10).describe('Segundos de espera antes de SIGKILL (default: 10)'),
+      timeout: z.number().int().positive().default(10).describe('Segundos antes de SIGKILL (default: 10)'),
+      connection: conn,
     },
-    ({ name_or_id, timeout }) => docker.stopContainer(name_or_id, timeout ?? 10)
+    ({ name_or_id, timeout, connection }) => docker.stopContainer(name_or_id, timeout ?? 10, connection ?? 'local')
   );
 
   tool(server, 'docker_restart_container',
     'Reinicia un contenedor.',
     {
       name_or_id: z.string().describe('Nombre o ID del contenedor'),
-      timeout: z.number().int().positive().default(10).describe('Segundos de espera antes de SIGKILL (default: 10)'),
+      timeout: z.number().int().positive().default(10).describe('Segundos antes de SIGKILL (default: 10)'),
+      connection: conn,
     },
-    ({ name_or_id, timeout }) => docker.restartContainer(name_or_id, timeout ?? 10)
+    ({ name_or_id, timeout, connection }) => docker.restartContainer(name_or_id, timeout ?? 10, connection ?? 'local')
   );
 
   tool(server, 'docker_remove_container',
-    'Elimina un contenedor. Usa force=true para eliminar aunque esté corriendo.',
+    'Elimina un contenedor. force=true para eliminar aunque esté corriendo.',
     {
       name_or_id: z.string().describe('Nombre o ID del contenedor'),
       force: z.boolean().default(false).describe('true para forzar eliminación aunque esté corriendo'),
+      connection: conn,
     },
-    ({ name_or_id, force }) => docker.removeContainer(name_or_id, force ?? false)
+    ({ name_or_id, force, connection }) => docker.removeContainer(name_or_id, force ?? false, connection ?? 'local')
   );
 
   tool(server, 'docker_container_logs',
     'Obtiene los últimos N logs de un contenedor con timestamps.',
     {
       name_or_id: z.string().describe('Nombre o ID del contenedor'),
-      lines: z.number().int().positive().default(100).describe('Número de líneas a retornar (default: 100)'),
+      lines: z.number().int().positive().default(100).describe('Líneas a retornar (default: 100)'),
+      connection: conn,
     },
-    ({ name_or_id, lines }) => docker.containerLogs(name_or_id, lines ?? 100)
+    ({ name_or_id, lines, connection }) => docker.containerLogs(name_or_id, lines ?? 100, connection ?? 'local')
   );
 
   tool(server, 'docker_container_stats',
     'Muestra el uso actual de CPU, memoria y red de un contenedor.',
     {
       name_or_id: z.string().describe('Nombre o ID del contenedor'),
+      connection: conn,
     },
-    ({ name_or_id }) => docker.containerStats(name_or_id)
+    ({ name_or_id, connection }) => docker.containerStats(name_or_id, connection ?? 'local')
   );
 
   tool(server, 'docker_compose_up',
-    `Crea y levanta un stack de contenedores desde un YAML de docker-compose.
-El YAML se pasa como string directamente — no hace falta un archivo en disco.
-Requiere docker compose CLI disponible en el host.
+    `Crea y levanta un stack desde un YAML de docker-compose pasado como string.
+Para servidores remotos, usa el parámetro host directamente (no necesita docker_connect).
 
 Ejemplo de compose_yaml:
   services:
@@ -806,30 +848,34 @@ Ejemplo de compose_yaml:
         - "8080:80"
       restart: unless-stopped`,
     {
-      project_name: z.string().describe('Nombre del proyecto compose (identifica el stack)'),
-      compose_yaml: z.string().describe('Contenido completo del docker-compose.yml como string'),
-      pull: z.boolean().default(false).describe('true para hacer pull de las imágenes antes de levantar'),
-      build: z.boolean().default(false).describe('true para rebuild de imágenes con build context'),
+      project_name: z.string().describe('Nombre del proyecto compose'),
+      compose_yaml: z.string().describe('Contenido completo del docker-compose.yml'),
+      pull: z.boolean().default(false).describe('Pull de imágenes antes de levantar'),
+      build: z.boolean().default(false).describe('Rebuild de imágenes con build context'),
+      host: z.string().optional().describe('IP del servidor remoto (opcional, omitir para local)'),
+      port: z.number().int().default(2375).describe('Puerto Docker del servidor remoto (default: 2375)'),
     },
-    ({ project_name, compose_yaml, pull, build }) =>
-      docker.composeUp(project_name, compose_yaml, { pull: pull ?? false, build: build ?? false })
+    ({ project_name, compose_yaml, pull, build, host, port }) =>
+      docker.composeUp(project_name, compose_yaml, { pull: pull ?? false, build: build ?? false, host, port: port ?? 2375 })
   );
 
   tool(server, 'docker_compose_down',
     'Detiene y elimina los contenedores de un stack compose por su nombre de proyecto.',
     {
-      project_name: z.string().describe('Nombre del proyecto compose (el mismo usado en docker_compose_up)'),
-      remove_volumes: z.boolean().default(false).describe('true para eliminar también los volúmenes del stack'),
-      remove_images: z.boolean().default(false).describe('true para eliminar también las imágenes usadas'),
+      project_name: z.string().describe('Nombre del proyecto compose'),
+      remove_volumes: z.boolean().default(false).describe('Eliminar también los volúmenes del stack'),
+      remove_images: z.boolean().default(false).describe('Eliminar también las imágenes usadas'),
+      host: z.string().optional().describe('IP del servidor remoto (opcional, omitir para local)'),
+      port: z.number().int().default(2375).describe('Puerto Docker del servidor remoto (default: 2375)'),
     },
-    ({ project_name, remove_volumes, remove_images }) =>
-      docker.composeDown(project_name, { removeVolumes: remove_volumes ?? false, removeImages: remove_images ?? false })
+    ({ project_name, remove_volumes, remove_images, host, port }) =>
+      docker.composeDown(project_name, { removeVolumes: remove_volumes ?? false, removeImages: remove_images ?? false, host, port: port ?? 2375 })
   );
 
   tool(server, 'docker_list_compose_stacks',
-    'Lista los stacks de docker compose activos en el sistema con sus servicios y estado.',
-    {},
-    () => docker.listComposeStacks()
+    'Lista los stacks de docker compose activos con sus servicios y estado.',
+    { connection: conn },
+    ({ connection }) => docker.listComposeStacks(connection ?? 'local')
   );
 
   return server;
@@ -847,7 +893,7 @@ app.use(express.json());
 const JENKINS_TOOLS = 20;
 const HA_TOOLS = 24;
 const PG_TOOLS = 22;
-const DOCKER_TOOLS = 15;
+const DOCKER_TOOLS = 19;
 
 app.get('/', (_req, res) => {
   res.json({
