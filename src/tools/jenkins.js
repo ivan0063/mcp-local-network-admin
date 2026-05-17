@@ -32,12 +32,9 @@ export class JenkinsClient {
   /** Obtiene el crumb CSRF (requerido para POST en algunos Jenkins) */
   async getCrumb() {
     try {
-      const res = await this.request(
-        '/crumbIssuer/api/json?xpath=concat(//crumbRequestField,":",//crumb)'
-      );
-      const text = await res.text();
-      const [field, value] = text.split(':');
-      return { [field]: value };
+      const res = await this.request('/crumbIssuer/api/json');
+      const data = await res.json();
+      return { [data.crumbRequestField]: data.crumb };
     } catch {
       return {};
     }
