@@ -39,24 +39,48 @@ export class JenkinsClient {
       const [field, value] = text.split(':');
       return { [field]: value };
     } catch {
-      return {}; // Algunos Jenkins tienen CSRF deshabilitado
+      return {};
     }
   }
 
   // ─── Listar y explorar ────────────────────────────────────────
 
-  /** Lista todos los jobs con su estado y último build */
-  async listJobs() {
-    const res = await this.request(
-      '/api/json?tree=jobs[name,url,color,description,lastBuild[number,result,timestamp,duration,url]]'
-    );
-    return res.json();
+  /**
+   * Lista todos los jobs con su estado y último build.
+   * Soporta folders y multibranch pipelines de forma recursiva.
+   */
+  async listJobs(basePath = '') {
+    const path = `${basePath}/api/json?tree=jobs[name,url,color,description,_class,lastBuild[number,result,timestamp,duration,url]]`;
+    const res = await this.request(path);
+    const data = await res.json();
+
+    const folderClasses = [
+      'com.cloudbees.hudson.plugins.folder.Folder',
+      'org.jenkinsci.plugins.workflow.multibranch.WorkflowMultiBranchProject',
+      'jenkins.branch.OrganizationFolder',
+    ];
+
+    const results = [];
+    for (const job of data.jobs ?? []) {
+      const jobPath = basePath ? `${basePath}/job/${enc(job.name)}` : `/job/${enc(job.name)}`;
+      if (folderClasses.some(c => job._class === c)) {
+        const children = await this.listJobs(jobPath).catch(() => []);
+        for (const child of children) {
+          results.push({ ...child, path: `${job.name}/${child.path ?? child.name}` });
+        }
+      } else {
+        results.push({ ...job, path: job.name });
+      }
+    }
+    return results;
   }
 
-  /** Información detallada de un job */
+  /** Información detallada de un job incluyendo parámetros definidos */
   async getJobInfo(jobName) {
     const res = await this.request(
-      `/job/${enc(jobName)}/api/json?tree=name,description,url,color,buildable,lastBuild[*],builds[number,result,timestamp]{0,5}`
+      `/job/${enc(jobName)}/api/json?tree=name,description,url,color,buildable,` +
+      `property[_class,parameterDefinitions[name,type,defaultParameterValue[value],description]],` +
+      `lastBuild[*],builds[number,result,timestamp]{0,5}`
     );
     return res.json();
   }
@@ -75,22 +99,27 @@ export class JenkinsClient {
     return res.json();
   }
 
-  /** Log completo de un build */
-  async getBuildLog(jobName, buildNumber = 'lastBuild') {
+  /** Log de un build — por defecto las últimas 100 líneas */
+  async getBuildLog(jobName, buildNumber = 'lastBuild', lines = 100) {
     const res = await this.request(
       `/job/${enc(jobName)}/${buildNumber}/consoleText`
     );
     const text = await res.text();
-    // Devolver solo las últimas 100 líneas para no saturar el contexto
-    const lines = text.split('\n');
-    return lines.slice(-100).join('\n');
+    return text.split('\n').slice(-lines).join('\n');
+  }
+
+  /** Stages de un pipeline via wfapi (requiere Pipeline Stage View plugin) */
+  async getBuildStages(jobName, buildNumber = 'lastBuild') {
+    const res = await this.request(
+      `/job/${enc(jobName)}/${buildNumber}/wfapi/describe`
+    );
+    return res.json();
   }
 
   // ─── Crear y modificar jobs ───────────────────────────────────
 
   /**
    * Copia un job existente como base para uno nuevo.
-   * Es la forma más rápida de replicar un pipeline.
    */
   async copyJob(fromJob, toJob) {
     const crumb = await this.getCrumb();
@@ -104,7 +133,7 @@ export class JenkinsClient {
     };
   }
 
-  /** Crea un job desde XML (útil para modificar la config antes de crear) */
+  /** Crea un job desde XML */
   async createJob(jobName, configXml) {
     const crumb = await this.getCrumb();
     await this.request(`/createItem?name=${enc(jobName)}`, {
@@ -136,11 +165,10 @@ export class JenkinsClient {
     return { success: true, message: `Job '${jobName}' eliminado` };
   }
 
-  // ─── Ejecutar builds ──────────────────────────────────────────
+  // ─── Ejecutar y controlar builds ──────────────────────────────
 
   /**
    * Dispara un build. Acepta parámetros opcionales.
-   * Si el job tiene parameters configurados, se usa buildWithParameters.
    */
   async triggerBuild(jobName, parameters = {}) {
     const crumb = await this.getCrumb();
@@ -165,6 +193,16 @@ export class JenkinsClient {
     };
   }
 
+  /** Aborta un build en curso */
+  async abortBuild(jobName, buildNumber) {
+    const crumb = await this.getCrumb();
+    await this.request(`/job/${enc(jobName)}/${buildNumber}/stop`, {
+      method: 'POST',
+      headers: crumb,
+    });
+    return { success: true, message: `Build #${buildNumber} de '${jobName}' abortado` };
+  }
+
   /** Habilita un job deshabilitado */
   async enableJob(jobName) {
     const crumb = await this.getCrumb();
@@ -183,6 +221,44 @@ export class JenkinsClient {
       headers: crumb,
     });
     return { success: true, message: `Job '${jobName}' deshabilitado` };
+  }
+
+  // ─── Cola y nodos ─────────────────────────────────────────────
+
+  /** Ver la cola de builds pendientes */
+  async getQueue() {
+    const res = await this.request(
+      '/queue/api/json?tree=items[id,task[name,url],why,blocked,stuck,buildableStartMilliseconds]'
+    );
+    return res.json();
+  }
+
+  /** Listar nodos/agentes con su estado */
+  async listNodes() {
+    const res = await this.request(
+      '/computer/api/json?tree=computer[displayName,description,offline,temporarilyOffline,numExecutors,busyExecutors,assignedLabels[name]]'
+    );
+    return res.json();
+  }
+
+  // ─── Parámetros y búsqueda ────────────────────────────────────
+
+  /** Obtiene los parámetros que acepta un job parametrizado */
+  async getJobParameters(jobName) {
+    const info = await this.getJobInfo(jobName);
+    const paramsProp = info.property?.find(p =>
+      p._class?.includes('ParametersDefinitionProperty')
+    );
+    return paramsProp?.parameterDefinitions ?? [];
+  }
+
+  /** Busca builds de un job filtrando por resultado */
+  async searchBuilds(jobName, result, limit = 20) {
+    const res = await this.request(
+      `/job/${enc(jobName)}/api/json?tree=builds[number,result,timestamp,duration,url]{0,${limit}}`
+    );
+    const data = await res.json();
+    return data.builds.filter(b => b.result === result.toUpperCase());
   }
 }
 

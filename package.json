@@ -1,17 +1,18 @@
 {
-  "name": "local-ai-assistant",
-  "version": "1.0.0",
-  "description": "Asistente de IA para tu red local — Jenkins y Home Assistant",
+  "name": "mcp-local-network-admin",
+  "version": "2.0.0",
+  "description": "MCP server para administración de red local — Jenkins y Home Assistant",
   "type": "module",
-  "main": "src/server.js",
+  "main": "src/mcp-server.js",
   "scripts": {
-    "start": "node src/server.js",
-    "dev": "node --watch src/server.js"
+    "start": "node src/mcp-server.js",
+    "dev": "node --watch src/mcp-server.js"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.39.0",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "dotenv": "^16.4.0",
-    "express": "^4.19.0"
+    "express": "^4.19.0",
+    "zod": "^3.25.76"
   },
   "engines": {
     "node": ">=18.0.0"

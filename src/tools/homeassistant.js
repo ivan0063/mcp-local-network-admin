@@ -32,12 +32,6 @@ export class HomeAssistantClient {
 
   // ─── Estado del sistema ───────────────────────────────────────
 
-  /** Verifica conectividad y devuelve info de la instancia HA */
-  async checkConnection() {
-    const res = await this.request('/');
-    return res.json();
-  }
-
   /** Configuración global: versión, timezone, unidades, ubicación */
   async getConfig() {
     const res = await this.request('/config');
@@ -47,14 +41,12 @@ export class HomeAssistantClient {
   // ─── Entidades y estados ──────────────────────────────────────
 
   /**
-   * Devuelve TODOS los estados de todas las entidades.
-   * Incluye lights, switches, sensors, climate, automations, scenes, etc.
-   * Nota: puede ser una respuesta grande. Usar getEntitiesByDomain para filtrar.
+   * Devuelve TODOS los estados resumidos.
+   * Para filtrar por tipo usar getEntitiesByDomain.
    */
   async getAllStates() {
     const res = await this.request('/states');
     const states = await res.json();
-    // Resumen compacto para no saturar el contexto
     return states.map((s) => ({
       entity_id: s.entity_id,
       state: s.state,
@@ -69,11 +61,7 @@ export class HomeAssistantClient {
     return res.json();
   }
 
-  /**
-   * Filtra entidades por dominio.
-   * Dominios comunes: light, switch, climate, sensor, binary_sensor,
-   *                   automation, scene, script, media_player, cover, fan
-   */
+  /** Filtra entidades por dominio */
   async getEntitiesByDomain(domain) {
     const res = await this.request('/states');
     const states = await res.json();
@@ -90,14 +78,7 @@ export class HomeAssistantClient {
   // ─── Control de dispositivos ──────────────────────────────────
 
   /**
-   * Llama a un servicio de HA — la acción principal para controlar dispositivos.
-   *
-   * Ejemplos:
-   *   callService('light', 'turn_on', { entity_id: 'light.sala', brightness: 200 })
-   *   callService('switch', 'toggle', { entity_id: 'switch.ventilador' })
-   *   callService('climate', 'set_temperature', { entity_id: 'climate.ac', temperature: 22 })
-   *   callService('scene', 'turn_on', { entity_id: 'scene.cine' })
-   *   callService('automation', 'trigger', { entity_id: 'automation.alarma' })
+   * Llama a un servicio de HA — acción principal para controlar dispositivos.
    */
   async callService(domain, service, serviceData = {}) {
     const res = await this.request(`/services/${domain}/${service}`, {
@@ -130,12 +111,74 @@ export class HomeAssistantClient {
     return this.callService('automation', 'trigger', { entity_id: entityId });
   }
 
+  // ─── Escenas ──────────────────────────────────────────────────
+
+  /** Lista todas las escenas disponibles */
+  async getScenes() {
+    return this.getEntitiesByDomain('scene');
+  }
+
+  /** Activa una escena */
+  async activateScene(entityId) {
+    return this.callService('scene', 'turn_on', { entity_id: entityId });
+  }
+
+  // ─── Scripts ──────────────────────────────────────────────────
+
+  /** Lista todos los scripts */
+  async getScripts() {
+    return this.getEntitiesByDomain('script');
+  }
+
+  /** Ejecuta un script, con variables opcionales */
+  async runScript(entityId, variables = {}) {
+    return this.callService('script', 'turn_on', { entity_id: entityId, variables });
+  }
+
+  // ─── Presencia ────────────────────────────────────────────────
+
+  /** Lista personas/presencia en casa */
+  async getPersons() {
+    return this.getEntitiesByDomain('person');
+  }
+
+  // ─── Media players ────────────────────────────────────────────
+
+  /**
+   * Controla un media player.
+   * action: 'media_play', 'media_pause', 'media_stop', 'volume_set', 'select_source', etc.
+   */
+  async controlMediaPlayer(entityId, action, extraData = {}) {
+    return this.callService('media_player', action, { entity_id: entityId, ...extraData });
+  }
+
+  // ─── Notificaciones ───────────────────────────────────────────
+
+  /**
+   * Envía una notificación via notify.{service}.
+   * notifyService: nombre del servicio después de "notify.", ej: "mobile_app_iphone"
+   */
+  async sendNotification(notifyService, title, message, data = {}) {
+    return this.callService('notify', notifyService, { title, message, ...data });
+  }
+
   // ─── Áreas / Habitaciones ─────────────────────────────────────
 
   /**
-   * HA no expone el área registry por REST estándar.
-   * Esta función infiere áreas desde los atributos de las entidades.
-   * Para gestión completa de áreas se recomienda usar el panel de HA.
+   * Obtiene el área registry via REST (HA 2023.4+).
+   * Fallback: inferir áreas desde atributos de entidades.
+   */
+  async getAreaRegistry() {
+    try {
+      const res = await this.request('/config/area_registry/list');
+      return res.json();
+    } catch {
+      return this.getAreasFromEntities();
+    }
+  }
+
+  /**
+   * Infiere áreas desde los atributos de las entidades (fallback).
    */
   async getAreasFromEntities() {
     const res = await this.request('/states');
@@ -157,21 +200,9 @@ export class HomeAssistantClient {
     return Object.fromEntries(areas);
   }
 
-  // ─── Escenas ──────────────────────────────────────────────────
-
-  /** Lista todas las escenas disponibles */
-  async getScenes() {
-    return this.getEntitiesByDomain('scene');
-  }
-
-  /** Activa una escena */
-  async activateScene(entityId) {
-    return this.callService('scene', 'turn_on', { entity_id: entityId });
-  }
-
   // ─── Historial y eventos ──────────────────────────────────────
 
-  /** Historial de estados de una entidad (últimas 24h por defecto) */
+  /** Historial de estados de una entidad (últimas N horas) */
   async getEntityHistory(entityId, hoursAgo = 24) {
     const end = new Date();
     const start = new Date(end - hoursAgo * 3600 * 1000);
@@ -182,6 +213,14 @@ export class HomeAssistantClient {
     return data[0] || [];
   }
 
+  /** Actividad reciente del logbook (últimas N horas, opcionalmente filtrada por entidad) */
+  async getLogbook(hoursAgo = 24, entityId = null) {
+    const start = new Date(Date.now() - hoursAgo * 3600 * 1000);
+    const path = `/logbook/${start.toISOString()}${entityId ? `?entity_id=${entityId}` : ''}`;
+    const res = await this.request(path);
+    return res.json();
+  }
+
   /** Dispara un evento personalizado en el bus de HA */
   async fireEvent(eventType, eventData = {}) {
     const res = await this.request(`/events/${eventType}`, {
@@ -190,4 +229,262 @@ export class HomeAssistantClient {
     });
     return res.json();
   }
+
+  // ─── Dashboards Lovelace ──────────────────────────────────────
+
+  /** Obtiene la configuración actual del dashboard Lovelace por defecto */
+  async getDashboard() {
+    const res = await this.request('/lovelace/config');
+    return res.json();
+  }
+
+  /**
+   * Guarda/reemplaza el dashboard Lovelace por defecto.
+   * Nota: solo afecta el dashboard por defecto. Requiere modo storage en HA.
+   */
+  async saveDashboard(config) {
+    const res = await this.request('/lovelace/config', {
+      method: 'POST',
+      body: JSON.stringify(config),
+    });
+    return res.json();
+  }
+
+  /**
+   * Genera y guarda un dashboard Lovelace completo.
+   * type: 'rooms' | 'energy' | 'homekit' | 'automations'
+   */
+  async createLovelaceDashboard(type) {
+    let config;
+
+    switch (type) {
+      case 'rooms': {
+        const areas = await this.getAreaRegistry();
+        const allEntities = await this.getAllStates();
+        config = buildRoomsDashboard(areas, allEntities);
+        break;
+      }
+      case 'energy': {
+        const sensors = await this.getEntitiesByDomain('sensor');
+        const energySensors = sensors.filter(s =>
+          ['energy', 'power'].includes(s.attributes?.device_class)
+        );
+        config = buildEnergyDashboard(energySensors);
+        break;
+      }
+      case 'homekit': {
+        const entities = await this.getHomekitEntities();
+        config = buildHomekitDashboard(entities);
+        break;
+      }
+      case 'automations': {
+        const automations = await this.getAutomations();
+        config = buildAutomationsDashboard(automations);
+        break;
+      }
+      default:
+        throw new Error(`Tipo desconocido: '${type}'. Usa: rooms, energy, homekit, automations`);
+    }
+
+    await this.saveDashboard(config);
+    return { success: true, type, config };
+  }
+
+  // ─── HomeKit ──────────────────────────────────────────────────
+
+  /**
+   * Lista entidades compatibles con Apple HomeKit filtradas por dominio.
+   */
+  async getHomekitEntities() {
+    const compatDomains = [
+      'light', 'switch', 'climate', 'lock', 'cover', 'fan',
+      'sensor', 'binary_sensor', 'alarm_control_panel', 'media_player',
+    ];
+    const res = await this.request('/states');
+    const states = await res.json();
+    return states
+      .filter(s => compatDomains.some(d => s.entity_id.startsWith(`${d}.`)))
+      .map(s => ({
+        entity_id: s.entity_id,
+        state: s.state,
+        friendly_name: s.attributes?.friendly_name,
+        domain: s.entity_id.split('.')[0],
+        device_class: s.attributes?.device_class ?? null,
+        unit: s.attributes?.unit_of_measurement ?? null,
+      }));
+  }
+
+  /**
+   * Resetea un accesorio HomeKit para forzar re-exposición.
+   * Requiere integración HomeKit Bridge configurada en HA.
+   */
+  async resetHomekitAccessory(entityId) {
+    return this.callService('homekit', 'reset_accessory', { entity_id: entityId });
+  }
+}
+
+// ─── Helpers para generar configs Lovelace ───────────────────────────────────
+
+function buildRoomsDashboard(areas, allEntities) {
+  const views = [];
+
+  // Si tenemos áreas del registry (array de objetos con name/id)
+  const areaList = Array.isArray(areas)
+    ? areas
+    : Object.entries(areas).map(([name, entities]) => ({ name, entities }));
+
+  if (areaList.length === 0) {
+    // Fallback: un solo view con todas las entidades controlables
+    return {
+      title: 'Control por Habitación',
+      views: [{
+        title: 'Todos los dispositivos',
+        icon: 'mdi:home',
+        cards: [buildEntitiesCard('Luces', allEntities.filter(e => e.entity_id.startsWith('light.')), 'mdi:lightbulb'),
+          buildEntitiesCard('Switches', allEntities.filter(e => e.entity_id.startsWith('switch.')), 'mdi:toggle-switch')],
+      }],
+    };
+  }
+
+  for (const area of areaList) {
+    const areaEntities = Array.isArray(area.entities)
+      ? area.entities
+      : allEntities.filter(e => e.area === area.name);
+
+    if (areaEntities.length === 0) continue;
+
+    views.push({
+      title: area.name,
+      icon: 'mdi:home-outline',
+      cards: [
+        {
+          type: 'entities',
+          title: area.name,
+          entities: areaEntities.map(e => ({
+            entity: e.entity_id ?? e,
+            name: e.friendly_name,
+          })),
+        },
+      ],
+    });
+  }
+
+  if (views.length === 0) {
+    views.push({ title: 'Sin áreas', cards: [] });
+  }
+
+  return { title: 'Control por Habitación', views };
+}
+
+function buildEnergyDashboard(energySensors) {
+  const powerSensors = energySensors.filter(s => s.attributes?.device_class === 'power');
+  const energySensorsFiltered = energySensors.filter(s => s.attributes?.device_class === 'energy');
+
+  const cards = [];
+
+  if (powerSensors.length > 0) {
+    cards.push({
+      type: 'entities',
+      title: 'Potencia en tiempo real (W)',
+      entities: powerSensors.map(s => ({ entity: s.entity_id, name: s.friendly_name })),
+    });
+    cards.push({
+      type: 'history-graph',
+      title: 'Historial de potencia',
+      hours_to_show: 24,
+      entities: powerSensors.slice(0, 5).map(s => ({ entity: s.entity_id })),
+    });
+  }
+
+  if (energySensorsFiltered.length > 0) {
+    cards.push({
+      type: 'entities',
+      title: 'Consumo acumulado (kWh)',
+      entities: energySensorsFiltered.map(s => ({ entity: s.entity_id, name: s.friendly_name })),
+    });
+  }
+
+  if (cards.length === 0) {
+    cards.push({
+      type: 'markdown',
+      content: 'No se encontraron sensores de energía o potencia en Home Assistant.',
+    });
+  }
+
+  return {
+    title: 'Energía y Consumo',
+    views: [{ title: 'Energía', icon: 'mdi:lightning-bolt', cards }],
+  };
+}
+
+function buildHomekitDashboard(entities) {
+  const byDomain = {};
+  for (const e of entities) {
+    if (!byDomain[e.domain]) byDomain[e.domain] = [];
+    byDomain[e.domain].push(e);
+  }
+
+  const domainConfig = {
+    light: { title: 'Luces', icon: 'mdi:lightbulb' },
+    switch: { title: 'Switches', icon: 'mdi:toggle-switch' },
+    climate: { title: 'Clima', icon: 'mdi:thermometer' },
+    lock: { title: 'Cerraduras', icon: 'mdi:lock' },
+    cover: { title: 'Persianas / Puertas', icon: 'mdi:window-shutter' },
+    fan: { title: 'Ventiladores', icon: 'mdi:fan' },
+    alarm_control_panel: { title: 'Alarma', icon: 'mdi:shield' },
+    binary_sensor: { title: 'Sensores binarios', icon: 'mdi:motion-sensor' },
+    sensor: { title: 'Sensores', icon: 'mdi:gauge' },
+    media_player: { title: 'Media players', icon: 'mdi:speaker' },
+  };
+
+  const cards = Object.entries(byDomain).map(([domain, domEntities]) => {
+    const cfg = domainConfig[domain] ?? { title: domain, icon: 'mdi:devices' };
+    return buildEntitiesCard(cfg.title, domEntities, cfg.icon);
+  });
+
+  if (cards.length === 0) {
+    cards.push({
+      type: 'markdown',
+      content: 'No se encontraron entidades compatibles con HomeKit.',
+    });
+  }
+
+  return {
+    title: 'Apple HomeKit',
+    views: [{ title: 'HomeKit', icon: 'mdi:apple', cards }],
+  };
+}
+
+function buildAutomationsDashboard(automations) {
+  const active = automations.filter(a => a.state === 'on');
+  const inactive = automations.filter(a => a.state === 'off');
+
+  const cards = [];
+
+  if (active.length > 0) {
+    cards.push(buildEntitiesCard(`Activas (${active.length})`, active, 'mdi:play-circle'));
+  }
+  if (inactive.length > 0) {
+    cards.push(buildEntitiesCard(`Inactivas (${inactive.length})`, inactive, 'mdi:pause-circle'));
+  }
+  if (cards.length === 0) {
+    cards.push({ type: 'markdown', content: 'No hay automatizaciones configuradas.' });
+  }
+
+  return {
+    title: 'Automatizaciones',
+    views: [{ title: 'Automatizaciones', icon: 'mdi:robot', cards }],
+  };
+}
+
+function buildEntitiesCard(title, entities, icon) {
+  return {
+    type: 'entities',
+    title,
+    icon,
+    entities: entities.map(e => ({
+      entity: e.entity_id,
+      name: e.friendly_name,
+    })),
+  };
 }
