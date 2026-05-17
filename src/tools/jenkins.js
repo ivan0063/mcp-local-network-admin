@@ -32,12 +32,9 @@ export class JenkinsClient {
   /** Obtiene el crumb CSRF (requerido para POST en algunos Jenkins) */
   async getCrumb() {
     try {
-      const res = await this.request(
-        '/crumbIssuer/api/json?xpath=concat(//crumbRequestField,":",//crumb)'
-      );
-      const text = await res.text();
-      const [field, value] = text.split(':');
-      return { [field]: value };
+      const res = await this.request('/crumbIssuer/api/json');
+      const data = await res.json();
+      return { [data.crumbRequestField]: data.crumb };
     } catch {
       return {};
     }
@@ -117,6 +114,147 @@ export class JenkinsClient {
   }
 
   // ─── Crear y modificar jobs ───────────────────────────────────
+
+  /**
+   * Crea un Pipeline job con script Groovy inline.
+   * Genera el XML correcto para WorkflowJob sin que el caller lo conozca.
+   */
+  async createPipelineJob(jobName, { script, description = '', parameters = [] } = {}) {
+    const paramsDefs = parameters.map(p => {
+      switch (p.type) {
+        case 'string':
+          return `<hudson.model.StringParameterDefinition>
+              <name>${p.name}</name>
+              <description>${p.description ?? ''}</description>
+              <defaultValue>${p.default ?? ''}</defaultValue>
+              <trim>false</trim>
+            </hudson.model.StringParameterDefinition>`;
+        case 'boolean':
+          return `<hudson.model.BooleanParameterDefinition>
+              <name>${p.name}</name>
+              <description>${p.description ?? ''}</description>
+              <defaultValue>${p.default ?? false}</defaultValue>
+            </hudson.model.BooleanParameterDefinition>`;
+        case 'choice':
+          return `<hudson.model.ChoiceParameterDefinition>
+              <name>${p.name}</name>
+              <description>${p.description ?? ''}</description>
+              <choices class="java.util.Arrays$ArrayList">
+                <a class="string-array">${(p.choices ?? []).map(c => `<string>${c}</string>`).join('')}</a>
+              </choices>
+            </hudson.model.ChoiceParameterDefinition>`;
+        default:
+          return '';
+      }
+    }).filter(Boolean);
+
+    const propertiesXml = paramsDefs.length > 0
+      ? `<properties>
+          <hudson.model.ParametersDefinitionProperty>
+            <parameterDefinitions>${paramsDefs.join('\n')}</parameterDefinitions>
+          </hudson.model.ParametersDefinitionProperty>
+        </properties>`
+      : '<properties/>';
+
+    const configXml = `<?xml version='1.1' encoding='UTF-8'?>
+<flow-definition plugin="workflow-job">
+  <description>${description}</description>
+  <keepDependencies>false</keepDependencies>
+  ${propertiesXml}
+  <definition class="org.jenkinsci.plugins.workflow.cps.CpsFlowDefinition" plugin="workflow-cps">
+    <script>${escapeXml(script)}</script>
+    <sandbox>true</sandbox>
+  </definition>
+  <triggers/>
+  <disabled>false</disabled>
+</flow-definition>`;
+
+    return this.createJob(jobName, configXml);
+  }
+
+  /**
+   * Crea un Pipeline job que lee el Jenkinsfile desde un repositorio Git.
+   */
+  async createPipelineJobFromRepo(jobName, {
+    repoUrl,
+    branch = 'main',
+    credentialsId = '',
+    scriptPath = 'Jenkinsfile',
+    description = '',
+    parameters = [],
+  } = {}) {
+    const paramsDefs = parameters.map(p => {
+      switch (p.type) {
+        case 'string':
+          return `<hudson.model.StringParameterDefinition>
+              <name>${p.name}</name>
+              <description>${p.description ?? ''}</description>
+              <defaultValue>${p.default ?? ''}</defaultValue>
+              <trim>false</trim>
+            </hudson.model.StringParameterDefinition>`;
+        case 'boolean':
+          return `<hudson.model.BooleanParameterDefinition>
+              <name>${p.name}</name>
+              <description>${p.description ?? ''}</description>
+              <defaultValue>${p.default ?? false}</defaultValue>
+            </hudson.model.BooleanParameterDefinition>`;
+        case 'choice':
+          return `<hudson.model.ChoiceParameterDefinition>
+              <name>${p.name}</name>
+              <description>${p.description ?? ''}</description>
+              <choices class="java.util.Arrays$ArrayList">
+                <a class="string-array">${(p.choices ?? []).map(c => `<string>${c}</string>`).join('')}</a>
+              </choices>
+            </hudson.model.ChoiceParameterDefinition>`;
+        default:
+          return '';
+      }
+    }).filter(Boolean);
+
+    const propertiesXml = paramsDefs.length > 0
+      ? `<properties>
+          <hudson.model.ParametersDefinitionProperty>
+            <parameterDefinitions>${paramsDefs.join('\n')}</parameterDefinitions>
+          </hudson.model.ParametersDefinitionProperty>
+        </properties>`
+      : '<properties/>';
+
+    const credXml = credentialsId
+      ? `<credentialsId>${credentialsId}</credentialsId>`
+      : '<credentialsId/>';
+
+    const configXml = `<?xml version='1.1' encoding='UTF-8'?>
+<flow-definition plugin="workflow-job">
+  <description>${description}</description>
+  <keepDependencies>false</keepDependencies>
+  ${propertiesXml}
+  <definition class="org.jenkinsci.plugins.workflow.cps.CpsScmFlowDefinition" plugin="workflow-cps">
+    <scm class="hudson.plugins.git.GitSCM" plugin="git">
+      <configVersion>2</configVersion>
+      <userRemoteConfigs>
+        <hudson.plugins.git.UserRemoteConfig>
+          <url>${repoUrl}</url>
+          ${credXml}
+        </hudson.plugins.git.UserRemoteConfig>
+      </userRemoteConfigs>
+      <branches>
+        <hudson.plugins.git.BranchSpec>
+          <name>*/${branch}</name>
+        </hudson.plugins.git.BranchSpec>
+      </branches>
+      <doGenerateSubmoduleConfigurations>false</doGenerateSubmoduleConfigurations>
+      <submoduleCfg class="empty-list"/>
+      <extensions/>
+    </scm>
+    <scriptPath>${scriptPath}</scriptPath>
+    <lightweight>true</lightweight>
+  </definition>
+  <triggers/>
+  <disabled>false</disabled>
+</flow-definition>`;
+
+    return this.createJob(jobName, configXml);
+  }
 
   /**
    * Copia un job existente como base para uno nuevo.
@@ -263,3 +401,10 @@ export class JenkinsClient {
 }
 
 const enc = (s) => encodeURIComponent(s);
+
+const escapeXml = (s) => String(s)
+  .replace(/&/g, '&amp;')
+  .replace(/</g, '&lt;')
+  .replace(/>/g, '&gt;')
+  .replace(/"/g, '&quot;')
+  .replace(/'/g, '&apos;');

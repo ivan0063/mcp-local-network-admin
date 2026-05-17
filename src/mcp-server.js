@@ -185,6 +185,63 @@ function createServer() {
     ({ job_name, result, limit }) => jenkins.searchBuilds(job_name, result, limit ?? 20)
   );
 
+  tool(server, 'jenkins_create_pipeline_job',
+    `Crea un Pipeline job en Jenkins con un script Groovy inline.
+No requiere crear el item manualmente — lo crea completo desde cero.
+Soporta parámetros opcionales de tipo string, boolean o choice.
+
+Ejemplo de parámetros:
+[
+  {"name": "BRANCH", "type": "string", "default": "main", "description": "Rama a construir"},
+  {"name": "DEPLOY", "type": "boolean", "default": false},
+  {"name": "ENV", "type": "choice", "choices": ["dev", "staging", "prod"]}
+]`,
+    {
+      job_name: z.string().describe('Nombre del nuevo job en Jenkins'),
+      script: z.string().describe('Script Groovy del pipeline (contenido completo del Jenkinsfile)'),
+      description: z.string().optional().describe('Descripción del job'),
+      parameters: z.array(z.object({
+        name: z.string(),
+        type: z.enum(['string', 'boolean', 'choice']),
+        description: z.string().optional(),
+        default: z.union([z.string(), z.boolean()]).optional(),
+        choices: z.array(z.string()).optional(),
+      })).optional().describe('Parámetros del pipeline'),
+    },
+    ({ job_name, script, description, parameters }) =>
+      jenkins.createPipelineJob(job_name, { script, description, parameters: parameters ?? [] })
+  );
+
+  tool(server, 'jenkins_create_pipeline_job_from_repo',
+    `Crea un Pipeline job en Jenkins que lee el Jenkinsfile desde un repositorio Git.
+No requiere crear el item manualmente — lo crea completo desde cero.
+Ideal para apuntar a un repo existente que ya tiene su Jenkinsfile.`,
+    {
+      job_name: z.string().describe('Nombre del nuevo job en Jenkins'),
+      repo_url: z.string().describe('URL del repositorio Git, ej: https://github.com/user/repo.git'),
+      branch: z.string().default('main').describe('Rama a usar (default: main)'),
+      credentials_id: z.string().optional().describe('ID de credencial Git configurada en Jenkins (opcional para repos públicos)'),
+      script_path: z.string().default('Jenkinsfile').describe('Ruta al Jenkinsfile dentro del repo (default: Jenkinsfile)'),
+      description: z.string().optional().describe('Descripción del job'),
+      parameters: z.array(z.object({
+        name: z.string(),
+        type: z.enum(['string', 'boolean', 'choice']),
+        description: z.string().optional(),
+        default: z.union([z.string(), z.boolean()]).optional(),
+        choices: z.array(z.string()).optional(),
+      })).optional().describe('Parámetros del pipeline'),
+    },
+    ({ job_name, repo_url, branch, credentials_id, script_path, description, parameters }) =>
+      jenkins.createPipelineJobFromRepo(job_name, {
+        repoUrl: repo_url,
+        branch: branch ?? 'main',
+        credentialsId: credentials_id ?? '',
+        scriptPath: script_path ?? 'Jenkinsfile',
+        description,
+        parameters: parameters ?? [],
+      })
+  );
+
   // ── Home Assistant tools ─────────────────────────────────────────────────────
 
   tool(server, 'ha_get_all_entities',
@@ -636,7 +693,7 @@ const transports = new Map(); // sessionId → { transport, server }
 const app = express();
 app.use(express.json());
 
-const JENKINS_TOOLS = 18;
+const JENKINS_TOOLS = 20;
 const HA_TOOLS = 24;
 const PG_TOOLS = 22;
 
