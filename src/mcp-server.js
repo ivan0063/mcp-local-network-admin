@@ -445,6 +445,212 @@ Tipos disponibles:
     ({ entity_id }) => ha.resetHomekitAccessory(entity_id)
   );
 
+  tool(server, 'ha_get_system_health',
+    'Muestra el estado de salud del sistema HA: core, base de datos, red, e integraciones con alertas.',
+    {},
+    () => ha.getSystemHealth()
+  );
+
+  tool(server, 'ha_render_template',
+    `Renderiza una plantilla Jinja2 en Home Assistant y devuelve el resultado.
+Imprescindible para testear condiciones y valores antes de usarlos en automatizaciones.
+Ejemplos:
+- "{{ states('sensor.temperatura') | float }}"
+- "{{ now().hour >= 22 or now().hour < 7 }}"
+- "{{ states.light | selectattr('state','eq','on') | list | count }}"`,
+    {
+      template: z.string().describe('Plantilla Jinja2 a renderizar'),
+    },
+    ({ template }) => ha.renderTemplate(template)
+  );
+
+  tool(server, 'ha_list_persistent_notifications',
+    'Lista las notificaciones persistentes activas en el panel de Home Assistant.',
+    {},
+    () => ha.listPersistentNotifications()
+  );
+
+  tool(server, 'ha_create_persistent_notification',
+    'Crea una notificación persistente visible en el panel de Home Assistant (no en el móvil).',
+    {
+      title: z.string().describe('Título de la notificación'),
+      message: z.string().describe('Cuerpo de la notificación (soporta Markdown)'),
+      notification_id: z.string().optional().describe('ID opcional para poder descartarla después. Si ya existe una con ese ID, la reemplaza.'),
+    },
+    ({ title, message, notification_id }) => ha.createPersistentNotification(title, message, notification_id ?? null)
+  );
+
+  tool(server, 'ha_dismiss_persistent_notification',
+    'Descarta y elimina una notificación persistente del panel de Home Assistant.',
+    {
+      notification_id: z.string().describe('ID de la notificación a descartar'),
+    },
+    ({ notification_id }) => ha.dismissPersistentNotification(notification_id)
+  );
+
+  tool(server, 'ha_list_automation_configs',
+    `Lista todas las automatizaciones con su configuración completa (triggers, conditions, actions).
+A diferencia de ha_get_automations, devuelve el config JSON real de cada automatización, no solo el estado.
+Requiere que HA esté en modo storage (predeterminado en versiones modernas).
+El campo "id" de cada automatización es el que necesitas para actualizar o eliminar.`,
+    {},
+    () => ha.listAutomationConfigs()
+  );
+
+  tool(server, 'ha_get_automation_config',
+    'Obtiene la configuración completa de una automatización específica por su unique_id.',
+    {
+      automation_id: z.string().describe('unique_id de la automatización (obtenlo con ha_list_automation_configs)'),
+    },
+    ({ automation_id }) => ha.getAutomationConfig(automation_id)
+  );
+
+  tool(server, 'ha_create_automation',
+    `Crea una nueva automatización en Home Assistant.
+El config debe ser un objeto JSON válido con la estructura de HA.
+
+Ejemplo mínimo:
+{
+  "alias": "Apagar luces a medianoche",
+  "trigger": [{"platform": "time", "at": "00:00:00"}],
+  "action": [{"service": "light.turn_off", "target": {"entity_id": "all"}}],
+  "mode": "single"
+}
+
+Plataformas de trigger comunes: time, state, numeric_state, sun, homeassistant, event, template
+Modes: single, restart, queued, parallel`,
+    {
+      config: z.record(z.unknown()).describe('Configuración completa de la automatización como objeto JSON'),
+    },
+    ({ config }) => ha.createAutomation(config)
+  );
+
+  tool(server, 'ha_update_automation',
+    `Actualiza una automatización existente. Reemplaza toda su configuración.
+Primero usa ha_get_automation_config para obtener el config actual, modifícalo y pásalo aquí.`,
+    {
+      automation_id: z.string().describe('unique_id de la automatización (obtenlo con ha_list_automation_configs)'),
+      config: z.record(z.unknown()).describe('Nueva configuración completa de la automatización'),
+    },
+    ({ automation_id, config }) => ha.updateAutomation(automation_id, config)
+  );
+
+  tool(server, 'ha_delete_automation',
+    'Elimina permanentemente una automatización de Home Assistant. Esta acción no se puede deshacer.',
+    {
+      automation_id: z.string().describe('unique_id de la automatización (obtenlo con ha_list_automation_configs)'),
+    },
+    ({ automation_id }) => ha.deleteAutomation(automation_id)
+  );
+
+  tool(server, 'ha_list_entity_registry',
+    `Lista el registro interno de entidades con su metadata: nombre override, área asignada,
+icono, si está deshabilitada, plataforma de origen y device_id.
+Más completo que ha_get_all_entities para tareas de organización.`,
+    {
+      domain: z.string().optional().describe('Filtrar por dominio: light, switch, sensor, etc. (opcional)'),
+    },
+    ({ domain }) => ha.listEntityRegistry(domain ?? null)
+  );
+
+  tool(server, 'ha_get_entity_registry_entry',
+    'Obtiene la entrada completa del registro para una entidad específica.',
+    {
+      entity_id: z.string().describe('ID de la entidad'),
+    },
+    ({ entity_id }) => ha.getEntityRegistryEntry(entity_id)
+  );
+
+  tool(server, 'ha_update_entity_registry_entry',
+    `Actualiza la entrada del registro de una entidad. Permite:
+- Renombrar el nombre visible (friendly name override)
+- Cambiar el entity_id (ej: light.lamp_1 → light.sala_lampara_esquina)
+- Asignar a un área
+- Deshabilitar/habilitar la entidad
+- Cambiar el icono (ej: mdi:lightbulb-outline)
+
+Nota: cambiar el entity_id romperá las automatizaciones que lo referencien — actualízalas también.`,
+    {
+      entity_id: z.string().describe('ID actual de la entidad'),
+      name: z.string().optional().nullable().describe('Nuevo nombre visible. null para usar el nombre del dispositivo.'),
+      new_entity_id: z.string().optional().describe('Nuevo entity_id (ej: "light.sala_principal")'),
+      area_id: z.string().optional().nullable().describe('ID del área a asignar. null para quitar el área.'),
+      disabled: z.boolean().optional().describe('true para deshabilitar la entidad, false para habilitarla'),
+      icon: z.string().optional().nullable().describe('Icono MDI, ej: "mdi:lightbulb". null para usar el default.'),
+    },
+    ({ entity_id, name, new_entity_id, area_id, disabled, icon }) =>
+      ha.updateEntityRegistryEntry(entity_id, { name, newEntityId: new_entity_id, areaId: area_id, disabled, icon })
+  );
+
+  tool(server, 'ha_list_device_registry',
+    'Lista todos los dispositivos físicos con sus entidades, área asignada, fabricante y modelo.',
+    {},
+    () => ha.listDeviceRegistry()
+  );
+
+  tool(server, 'ha_list_helpers',
+    `Lista los helpers creados en Home Assistant (input_boolean, input_number, input_select, input_text, counter, timer).
+Si se omite domain, devuelve todos los tipos.`,
+    {
+      domain: z.enum(['input_boolean', 'input_number', 'input_select', 'input_text', 'counter', 'timer'])
+        .optional()
+        .describe('Tipo de helper a listar (opcional, omitir para todos)'),
+    },
+    ({ domain }) => ha.listHelpers(domain ?? null)
+  );
+
+  tool(server, 'ha_create_helper',
+    `Crea un helper en Home Assistant.
+
+Ejemplos por tipo:
+- input_boolean:  {"id":"modo_cine","name":"Modo Cine","icon":"mdi:movie"}
+- input_number:   {"id":"temp_objetivo","name":"Temp objetivo","min":16,"max":30,"step":0.5,"unit_of_measurement":"°C","mode":"slider"}
+- input_select:   {"id":"modo_casa","name":"Modo Casa","options":["Normal","Vacaciones","Cine","Noche"]}
+- input_text:     {"id":"mensaje_bienvenida","name":"Mensaje","max":255}
+- counter:        {"id":"visitas","name":"Contador visitas","initial":0,"minimum":0,"step":1}
+- timer:          {"id":"timer_cocina","name":"Timer cocina","duration":"00:30:00","restore":true}`,
+    {
+      domain: z.enum(['input_boolean', 'input_number', 'input_select', 'input_text', 'counter', 'timer'])
+        .describe('Tipo de helper a crear'),
+      config: z.record(z.unknown()).describe('Configuración del helper como objeto JSON (incluir "id" y "name" como mínimo)'),
+    },
+    ({ domain, config }) => ha.createHelper(domain, config)
+  );
+
+  tool(server, 'ha_delete_helper',
+    'Elimina un helper de Home Assistant.',
+    {
+      domain: z.enum(['input_boolean', 'input_number', 'input_select', 'input_text', 'counter', 'timer'])
+        .describe('Tipo de helper'),
+      helper_id: z.string().describe('ID del helper (sin el prefijo del dominio, ej: "modo_cine" no "input_boolean.modo_cine")'),
+    },
+    ({ domain, helper_id }) => ha.deleteHelper(domain, helper_id)
+  );
+
+  tool(server, 'ha_list_statistic_ids',
+    'Lista todas las entidades que tienen estadísticas de largo plazo en el recorder de HA. Usa los IDs devueltos en ha_get_statistics.',
+    {},
+    () => ha.listStatisticIds()
+  );
+
+  tool(server, 'ha_get_statistics',
+    `Obtiene estadísticas agregadas (min, max, mean, sum) de una o más entidades para un período de tiempo.
+Ideal para analizar consumo energético, temperaturas, etc. a lo largo de días, semanas o meses.
+
+Ejemplo: temperatura de los últimos 7 días agrupada por día:
+- statistic_ids: ["sensor.temperatura_salon"]
+- start_time: "2024-11-01T00:00:00+00:00"
+- period: "day"`,
+    {
+      statistic_ids: z.array(z.string()).describe('Lista de entity_ids con estadísticas (usar ha_list_statistic_ids para ver disponibles)'),
+      start_time: z.string().describe('Fecha de inicio en formato ISO 8601, ej: "2024-11-01T00:00:00+00:00"'),
+      period: z.enum(['5minute', 'hour', 'day', 'week', 'month']).default('day').describe('Granularidad de la agrupación (default: day)'),
+      end_time: z.string().optional().describe('Fecha de fin en ISO 8601 (opcional, default: ahora)'),
+    },
+    ({ statistic_ids, start_time, period, end_time }) =>
+      ha.getStatistics(statistic_ids, start_time, period ?? 'day', end_time ?? null)
+  );
+
   // ── PostgreSQL tools ─────────────────────────────────────────────────────────
 
   tool(server, 'pg_connect',
@@ -1214,7 +1420,7 @@ const app = express();
 app.use(express.json());
 
 const JENKINS_TOOLS = 20;
-const HA_TOOLS = 24;
+const HA_TOOLS = 43;
 const PG_TOOLS = 22;
 const DOCKER_TOOLS = 19;
 const SSH_TOOLS = 12;
