@@ -321,6 +321,212 @@ export class HomeAssistantClient {
   async resetHomekitAccessory(entityId) {
     return this.callService('homekit', 'reset_accessory', { entity_id: entityId });
   }
+
+  // ─── Sistema ──────────────────────────────────────────────────
+
+  /** Salud del sistema HA: core, red, base de datos, integraciones */
+  async getSystemHealth() {
+    const res = await this.request('/system_health');
+    return res.json();
+  }
+
+  // ─── Template rendering ───────────────────────────────────────
+
+  /** Renderiza una plantilla Jinja2 y devuelve el resultado */
+  async renderTemplate(template) {
+    const res = await this.request('/template', {
+      method: 'POST',
+      body: JSON.stringify({ template }),
+    });
+    return res.text();
+  }
+
+  // ─── Notificaciones persistentes ──────────────────────────────
+
+  /** Lista las notificaciones persistentes visibles en el panel de HA */
+  async listPersistentNotifications() {
+    return this.getEntitiesByDomain('persistent_notification');
+  }
+
+  /** Crea una notificación persistente en el panel de HA */
+  async createPersistentNotification(title, message, notificationId = null) {
+    const data = { title, message };
+    if (notificationId) data.notification_id = notificationId;
+    return this.callService('persistent_notification', 'create', data);
+  }
+
+  /** Descarta una notificación persistente por su ID */
+  async dismissPersistentNotification(notificationId) {
+    return this.callService('persistent_notification', 'dismiss', { notification_id: notificationId });
+  }
+
+  // ─── Automatizaciones CRUD ────────────────────────────────────
+
+  /**
+   * Lista todas las automatizaciones con su config completa (triggers, actions, etc.).
+   * Solo funciona si HA está en modo storage (predeterminado en versiones modernas).
+   */
+  async listAutomationConfigs() {
+    const res = await this.request('/config/automation/config');
+    return res.json();
+  }
+
+  /** Obtiene la config completa de una automatización por su unique_id */
+  async getAutomationConfig(automationId) {
+    const res = await this.request(`/config/automation/config/${automationId}`);
+    return res.json();
+  }
+
+  /**
+   * Crea una nueva automatización. HA genera el unique_id si no se incluye.
+   * config: { alias, description, trigger, condition, action, mode }
+   */
+  async createAutomation(config) {
+    const res = await this.request('/config/automation/config', {
+      method: 'POST',
+      body: JSON.stringify(config),
+    });
+    return res.json();
+  }
+
+  /**
+   * Actualiza una automatización existente por su unique_id.
+   * Obtén el ID con listAutomationConfigs().
+   */
+  async updateAutomation(automationId, config) {
+    const res = await this.request(`/config/automation/config/${automationId}`, {
+      method: 'POST',
+      body: JSON.stringify({ ...config, id: automationId }),
+    });
+    return res.json();
+  }
+
+  /** Elimina permanentemente una automatización */
+  async deleteAutomation(automationId) {
+    await this.request(`/config/automation/config/${automationId}`, { method: 'DELETE' });
+    return { success: true, deleted: automationId };
+  }
+
+  // ─── Entity Registry ──────────────────────────────────────────
+
+  /**
+   * Lista el registro de entidades con metadata: área asignada, nombre override,
+   * si está deshabilitada, plataforma de origen, etc.
+   */
+  async listEntityRegistry(domain = null) {
+    const res = await this.request('/config/entity_registry');
+    const all = await res.json();
+    if (!domain) return all;
+    return all.filter(e => e.entity_id.startsWith(`${domain}.`));
+  }
+
+  /** Obtiene la entrada del registro para una entidad específica */
+  async getEntityRegistryEntry(entityId) {
+    const res = await this.request(`/config/entity_registry/${entityId}`);
+    return res.json();
+  }
+
+  /**
+   * Actualiza la entrada del registro de una entidad.
+   * Permite renombrar, reasignar área, cambiar entity_id, deshabilitar y cambiar icono.
+   */
+  async updateEntityRegistryEntry(entityId, { name, newEntityId, areaId, disabled, icon } = {}) {
+    const body = {};
+    if (name !== undefined) body.name = name;
+    if (newEntityId !== undefined) body.new_entity_id = newEntityId;
+    if (areaId !== undefined) body.area_id = areaId;
+    if (disabled !== undefined) body.disabled_by = disabled ? 'user' : null;
+    if (icon !== undefined) body.icon = icon;
+    const res = await this.request(`/config/entity_registry/${entityId}`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+    return res.json();
+  }
+
+  /** Lista el registro de dispositivos (grupos de entidades por dispositivo físico) */
+  async listDeviceRegistry() {
+    const res = await this.request('/config/device_registry');
+    return res.json();
+  }
+
+  // ─── Helpers ──────────────────────────────────────────────────
+
+  /**
+   * Lista helpers. Si domain es null, devuelve todos los tipos.
+   * domain: 'input_boolean' | 'input_number' | 'input_select' | 'input_text' | 'counter' | 'timer'
+   */
+  async listHelpers(domain = null) {
+    const domains = domain
+      ? [domain]
+      : ['input_boolean', 'input_number', 'input_select', 'input_text', 'counter', 'timer'];
+    const results = {};
+    for (const d of domains) {
+      try {
+        const res = await this.request(`/config/${d}`);
+        const data = await res.json();
+        results[d] = data.items ?? (Array.isArray(data) ? data : Object.values(data).filter(v => typeof v === 'object'));
+      } catch {
+        results[d] = [];
+      }
+    }
+    return domain ? results[domain] : results;
+  }
+
+  /**
+   * Crea un helper.
+   * Ejemplos de config por tipo:
+   * input_boolean:  { id, name, icon }
+   * input_number:   { id, name, min, max, step, unit_of_measurement, mode }  mode: slider|box
+   * input_select:   { id, name, options: [...], icon }
+   * input_text:     { id, name, min, max, pattern, mode }  mode: text|password
+   * counter:        { id, name, initial, minimum, maximum, step, restore }
+   * timer:          { id, name, duration: "HH:MM:SS", restore, icon }
+   */
+  async createHelper(domain, config) {
+    const res = await this.request(`/config/${domain}`, {
+      method: 'POST',
+      body: JSON.stringify(config),
+    });
+    return res.json();
+  }
+
+  /** Elimina un helper por su dominio e ID */
+  async deleteHelper(domain, helperId) {
+    await this.request(`/config/${domain}/${helperId}`, { method: 'DELETE' });
+    return { success: true, deleted: `${domain}.${helperId}` };
+  }
+
+  // ─── Estadísticas de largo plazo ──────────────────────────────
+
+  /**
+   * Lista todos los entity_ids que tienen estadísticas de largo plazo almacenadas.
+   * Útil para saber qué sensores tienen histórico aggregado disponible.
+   */
+  async listStatisticIds() {
+    const res = await this.request('/recorder/list_statistic_ids');
+    return res.json();
+  }
+
+  /**
+   * Obtiene estadísticas agregadas de una o más entidades.
+   * period: '5minute' | 'hour' | 'day' | 'week' | 'month'
+   * startTime: ISO 8601, ej: new Date(Date.now() - 30 * 86400000).toISOString()
+   */
+  async getStatistics(statisticIds, startTime, period = 'day', endTime = null) {
+    const body = {
+      start_time: startTime,
+      statistic_ids: Array.isArray(statisticIds) ? statisticIds : [statisticIds],
+      period,
+      types: ['min', 'max', 'mean', 'sum', 'state'],
+    };
+    if (endTime) body.end_time = endTime;
+    const res = await this.request('/recorder/statistics_during_period', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+    return res.json();
+  }
 }
 
 // ─── Helpers para generar configs Lovelace ───────────────────────────────────

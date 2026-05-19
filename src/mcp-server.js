@@ -9,11 +9,15 @@ import { JenkinsClient } from './tools/jenkins.js';
 import { HomeAssistantClient } from './tools/homeassistant.js';
 import { PostgresClient } from './tools/postgres.js';
 import { DockerClient } from './tools/docker.js';
+import { SshClient } from './tools/ssh.js';
+import { AsusRouterClient } from './tools/asus-router.js';
 
 const jenkins = new JenkinsClient();
 const ha = new HomeAssistantClient();
 const pg = new PostgresClient();
 const docker = new DockerClient();
+const ssh = new SshClient();
+const router = new AsusRouterClient();
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -439,6 +443,212 @@ Tipos disponibles:
       entity_id: z.string().describe('ID de la entidad a resetear en HomeKit'),
     },
     ({ entity_id }) => ha.resetHomekitAccessory(entity_id)
+  );
+
+  tool(server, 'ha_get_system_health',
+    'Muestra el estado de salud del sistema HA: core, base de datos, red, e integraciones con alertas.',
+    {},
+    () => ha.getSystemHealth()
+  );
+
+  tool(server, 'ha_render_template',
+    `Renderiza una plantilla Jinja2 en Home Assistant y devuelve el resultado.
+Imprescindible para testear condiciones y valores antes de usarlos en automatizaciones.
+Ejemplos:
+- "{{ states('sensor.temperatura') | float }}"
+- "{{ now().hour >= 22 or now().hour < 7 }}"
+- "{{ states.light | selectattr('state','eq','on') | list | count }}"`,
+    {
+      template: z.string().describe('Plantilla Jinja2 a renderizar'),
+    },
+    ({ template }) => ha.renderTemplate(template)
+  );
+
+  tool(server, 'ha_list_persistent_notifications',
+    'Lista las notificaciones persistentes activas en el panel de Home Assistant.',
+    {},
+    () => ha.listPersistentNotifications()
+  );
+
+  tool(server, 'ha_create_persistent_notification',
+    'Crea una notificación persistente visible en el panel de Home Assistant (no en el móvil).',
+    {
+      title: z.string().describe('Título de la notificación'),
+      message: z.string().describe('Cuerpo de la notificación (soporta Markdown)'),
+      notification_id: z.string().optional().describe('ID opcional para poder descartarla después. Si ya existe una con ese ID, la reemplaza.'),
+    },
+    ({ title, message, notification_id }) => ha.createPersistentNotification(title, message, notification_id ?? null)
+  );
+
+  tool(server, 'ha_dismiss_persistent_notification',
+    'Descarta y elimina una notificación persistente del panel de Home Assistant.',
+    {
+      notification_id: z.string().describe('ID de la notificación a descartar'),
+    },
+    ({ notification_id }) => ha.dismissPersistentNotification(notification_id)
+  );
+
+  tool(server, 'ha_list_automation_configs',
+    `Lista todas las automatizaciones con su configuración completa (triggers, conditions, actions).
+A diferencia de ha_get_automations, devuelve el config JSON real de cada automatización, no solo el estado.
+Requiere que HA esté en modo storage (predeterminado en versiones modernas).
+El campo "id" de cada automatización es el que necesitas para actualizar o eliminar.`,
+    {},
+    () => ha.listAutomationConfigs()
+  );
+
+  tool(server, 'ha_get_automation_config',
+    'Obtiene la configuración completa de una automatización específica por su unique_id.',
+    {
+      automation_id: z.string().describe('unique_id de la automatización (obtenlo con ha_list_automation_configs)'),
+    },
+    ({ automation_id }) => ha.getAutomationConfig(automation_id)
+  );
+
+  tool(server, 'ha_create_automation',
+    `Crea una nueva automatización en Home Assistant.
+El config debe ser un objeto JSON válido con la estructura de HA.
+
+Ejemplo mínimo:
+{
+  "alias": "Apagar luces a medianoche",
+  "trigger": [{"platform": "time", "at": "00:00:00"}],
+  "action": [{"service": "light.turn_off", "target": {"entity_id": "all"}}],
+  "mode": "single"
+}
+
+Plataformas de trigger comunes: time, state, numeric_state, sun, homeassistant, event, template
+Modes: single, restart, queued, parallel`,
+    {
+      config: z.record(z.unknown()).describe('Configuración completa de la automatización como objeto JSON'),
+    },
+    ({ config }) => ha.createAutomation(config)
+  );
+
+  tool(server, 'ha_update_automation',
+    `Actualiza una automatización existente. Reemplaza toda su configuración.
+Primero usa ha_get_automation_config para obtener el config actual, modifícalo y pásalo aquí.`,
+    {
+      automation_id: z.string().describe('unique_id de la automatización (obtenlo con ha_list_automation_configs)'),
+      config: z.record(z.unknown()).describe('Nueva configuración completa de la automatización'),
+    },
+    ({ automation_id, config }) => ha.updateAutomation(automation_id, config)
+  );
+
+  tool(server, 'ha_delete_automation',
+    'Elimina permanentemente una automatización de Home Assistant. Esta acción no se puede deshacer.',
+    {
+      automation_id: z.string().describe('unique_id de la automatización (obtenlo con ha_list_automation_configs)'),
+    },
+    ({ automation_id }) => ha.deleteAutomation(automation_id)
+  );
+
+  tool(server, 'ha_list_entity_registry',
+    `Lista el registro interno de entidades con su metadata: nombre override, área asignada,
+icono, si está deshabilitada, plataforma de origen y device_id.
+Más completo que ha_get_all_entities para tareas de organización.`,
+    {
+      domain: z.string().optional().describe('Filtrar por dominio: light, switch, sensor, etc. (opcional)'),
+    },
+    ({ domain }) => ha.listEntityRegistry(domain ?? null)
+  );
+
+  tool(server, 'ha_get_entity_registry_entry',
+    'Obtiene la entrada completa del registro para una entidad específica.',
+    {
+      entity_id: z.string().describe('ID de la entidad'),
+    },
+    ({ entity_id }) => ha.getEntityRegistryEntry(entity_id)
+  );
+
+  tool(server, 'ha_update_entity_registry_entry',
+    `Actualiza la entrada del registro de una entidad. Permite:
+- Renombrar el nombre visible (friendly name override)
+- Cambiar el entity_id (ej: light.lamp_1 → light.sala_lampara_esquina)
+- Asignar a un área
+- Deshabilitar/habilitar la entidad
+- Cambiar el icono (ej: mdi:lightbulb-outline)
+
+Nota: cambiar el entity_id romperá las automatizaciones que lo referencien — actualízalas también.`,
+    {
+      entity_id: z.string().describe('ID actual de la entidad'),
+      name: z.string().optional().nullable().describe('Nuevo nombre visible. null para usar el nombre del dispositivo.'),
+      new_entity_id: z.string().optional().describe('Nuevo entity_id (ej: "light.sala_principal")'),
+      area_id: z.string().optional().nullable().describe('ID del área a asignar. null para quitar el área.'),
+      disabled: z.boolean().optional().describe('true para deshabilitar la entidad, false para habilitarla'),
+      icon: z.string().optional().nullable().describe('Icono MDI, ej: "mdi:lightbulb". null para usar el default.'),
+    },
+    ({ entity_id, name, new_entity_id, area_id, disabled, icon }) =>
+      ha.updateEntityRegistryEntry(entity_id, { name, newEntityId: new_entity_id, areaId: area_id, disabled, icon })
+  );
+
+  tool(server, 'ha_list_device_registry',
+    'Lista todos los dispositivos físicos con sus entidades, área asignada, fabricante y modelo.',
+    {},
+    () => ha.listDeviceRegistry()
+  );
+
+  tool(server, 'ha_list_helpers',
+    `Lista los helpers creados en Home Assistant (input_boolean, input_number, input_select, input_text, counter, timer).
+Si se omite domain, devuelve todos los tipos.`,
+    {
+      domain: z.enum(['input_boolean', 'input_number', 'input_select', 'input_text', 'counter', 'timer'])
+        .optional()
+        .describe('Tipo de helper a listar (opcional, omitir para todos)'),
+    },
+    ({ domain }) => ha.listHelpers(domain ?? null)
+  );
+
+  tool(server, 'ha_create_helper',
+    `Crea un helper en Home Assistant.
+
+Ejemplos por tipo:
+- input_boolean:  {"id":"modo_cine","name":"Modo Cine","icon":"mdi:movie"}
+- input_number:   {"id":"temp_objetivo","name":"Temp objetivo","min":16,"max":30,"step":0.5,"unit_of_measurement":"°C","mode":"slider"}
+- input_select:   {"id":"modo_casa","name":"Modo Casa","options":["Normal","Vacaciones","Cine","Noche"]}
+- input_text:     {"id":"mensaje_bienvenida","name":"Mensaje","max":255}
+- counter:        {"id":"visitas","name":"Contador visitas","initial":0,"minimum":0,"step":1}
+- timer:          {"id":"timer_cocina","name":"Timer cocina","duration":"00:30:00","restore":true}`,
+    {
+      domain: z.enum(['input_boolean', 'input_number', 'input_select', 'input_text', 'counter', 'timer'])
+        .describe('Tipo de helper a crear'),
+      config: z.record(z.unknown()).describe('Configuración del helper como objeto JSON (incluir "id" y "name" como mínimo)'),
+    },
+    ({ domain, config }) => ha.createHelper(domain, config)
+  );
+
+  tool(server, 'ha_delete_helper',
+    'Elimina un helper de Home Assistant.',
+    {
+      domain: z.enum(['input_boolean', 'input_number', 'input_select', 'input_text', 'counter', 'timer'])
+        .describe('Tipo de helper'),
+      helper_id: z.string().describe('ID del helper (sin el prefijo del dominio, ej: "modo_cine" no "input_boolean.modo_cine")'),
+    },
+    ({ domain, helper_id }) => ha.deleteHelper(domain, helper_id)
+  );
+
+  tool(server, 'ha_list_statistic_ids',
+    'Lista todas las entidades que tienen estadísticas de largo plazo en el recorder de HA. Usa los IDs devueltos en ha_get_statistics.',
+    {},
+    () => ha.listStatisticIds()
+  );
+
+  tool(server, 'ha_get_statistics',
+    `Obtiene estadísticas agregadas (min, max, mean, sum) de una o más entidades para un período de tiempo.
+Ideal para analizar consumo energético, temperaturas, etc. a lo largo de días, semanas o meses.
+
+Ejemplo: temperatura de los últimos 7 días agrupada por día:
+- statistic_ids: ["sensor.temperatura_salon"]
+- start_time: "2024-11-01T00:00:00+00:00"
+- period: "day"`,
+    {
+      statistic_ids: z.array(z.string()).describe('Lista de entity_ids con estadísticas (usar ha_list_statistic_ids para ver disponibles)'),
+      start_time: z.string().describe('Fecha de inicio en formato ISO 8601, ej: "2024-11-01T00:00:00+00:00"'),
+      period: z.enum(['5minute', 'hour', 'day', 'week', 'month']).default('day').describe('Granularidad de la agrupación (default: day)'),
+      end_time: z.string().optional().describe('Fecha de fin en ISO 8601 (opcional, default: ahora)'),
+    },
+    ({ statistic_ids, start_time, period, end_time }) =>
+      ha.getStatistics(statistic_ids, start_time, period ?? 'day', end_time ?? null)
   );
 
   // ── PostgreSQL tools ─────────────────────────────────────────────────────────
@@ -878,6 +1088,325 @@ Ejemplo de compose_yaml:
     ({ connection }) => docker.listComposeStacks(connection ?? 'local')
   );
 
+  // ── SSH tools ────────────────────────────────────────────────────────────────
+
+  tool(server, 'ssh_connect',
+    `Registra una conexión SSH con un nombre para usarla en el resto de tools.
+Las credenciales se guardan solo en memoria y se pierden al reiniciar el server.
+Soporta autenticación por contraseña o por clave privada (pasar el contenido de la clave, no la ruta).`,
+    {
+      name: z.string().describe('Nombre para identificar esta conexión, ej: "pi", "lab1", "nas"'),
+      host: z.string().describe('IP o hostname del servidor'),
+      port: z.number().int().default(22).describe('Puerto SSH (default: 22)'),
+      username: z.string().describe('Usuario SSH'),
+      password: z.string().optional().describe('Contraseña (alternativa a clave privada)'),
+      private_key: z.string().optional().describe('Contenido de la clave privada SSH (ej: contenido de id_rsa)'),
+      passphrase: z.string().optional().describe('Passphrase de la clave privada (si aplica)'),
+    },
+    ({ name, host, port, username, password, private_key, passphrase }) =>
+      ssh.register(name, { host, port: port ?? 22, username, password, privateKey: private_key, passphrase })
+  );
+
+  tool(server, 'ssh_disconnect',
+    'Elimina una conexión SSH registrada de la memoria.',
+    { name: z.string().describe('Nombre de la conexión a eliminar') },
+    ({ name }) => ssh.unregister(name)
+  );
+
+  tool(server, 'ssh_list_connections',
+    'Lista las conexiones SSH registradas (sin mostrar contraseñas).',
+    {},
+    () => ssh.listConnections()
+  );
+
+  tool(server, 'ssh_exec',
+    `Ejecuta un comando en el servidor remoto y devuelve stdout, stderr y exit code.
+Útil para cualquier operación administrativa: instalar paquetes, ver logs, gestionar servicios, etc.`,
+    {
+      connection: z.string().describe('Nombre de la conexión registrada con ssh_connect'),
+      command: z.string().describe('Comando a ejecutar en el servidor remoto'),
+      timeout: z.number().int().positive().default(60000).describe('Timeout en milisegundos (default: 60000 = 1 minuto)'),
+    },
+    ({ connection, command, timeout }) => ssh.exec(connection, command, { timeout: timeout ?? 60_000 })
+  );
+
+  tool(server, 'ssh_upload_file',
+    'Sube un archivo local al servidor remoto vía SFTP.',
+    {
+      connection: z.string().describe('Nombre de la conexión'),
+      local_path: z.string().describe('Ruta local del archivo a subir'),
+      remote_path: z.string().describe('Ruta destino en el servidor remoto'),
+    },
+    ({ connection, local_path, remote_path }) => ssh.upload(connection, local_path, remote_path)
+  );
+
+  tool(server, 'ssh_download_file',
+    'Descarga un archivo del servidor remoto al sistema local vía SFTP.',
+    {
+      connection: z.string().describe('Nombre de la conexión'),
+      remote_path: z.string().describe('Ruta del archivo en el servidor remoto'),
+      local_path: z.string().describe('Ruta local donde guardar el archivo'),
+    },
+    ({ connection, remote_path, local_path }) => ssh.download(connection, remote_path, local_path)
+  );
+
+  tool(server, 'ssh_read_file',
+    'Lee el contenido de un archivo en el servidor remoto sin necesidad de descargarlo.',
+    {
+      connection: z.string().describe('Nombre de la conexión'),
+      remote_path: z.string().describe('Ruta del archivo a leer en el servidor remoto'),
+    },
+    ({ connection, remote_path }) => ssh.readRemoteFile(connection, remote_path)
+  );
+
+  tool(server, 'ssh_write_file',
+    'Escribe/sobreescribe un archivo en el servidor remoto con el contenido dado.',
+    {
+      connection: z.string().describe('Nombre de la conexión'),
+      remote_path: z.string().describe('Ruta del archivo destino en el servidor remoto'),
+      content: z.string().describe('Contenido a escribir en el archivo'),
+    },
+    ({ connection, remote_path, content }) => ssh.writeRemoteFile(connection, remote_path, content)
+  );
+
+  tool(server, 'ssh_get_system_info',
+    'Obtiene información básica del sistema remoto: OS, CPUs, memoria, disco y uptime.',
+    {
+      connection: z.string().describe('Nombre de la conexión'),
+    },
+    ({ connection }) => ssh.getSystemInfo(connection)
+  );
+
+  tool(server, 'ssh_list_processes',
+    'Lista los procesos en ejecución en el servidor remoto. Opcionalmente filtra por nombre.',
+    {
+      connection: z.string().describe('Nombre de la conexión'),
+      filter: z.string().optional().describe('Filtro de texto para buscar procesos específicos (opcional)'),
+    },
+    ({ connection, filter }) => ssh.listProcesses(connection, filter ?? '')
+  );
+
+  tool(server, 'ssh_tail_log',
+    'Lee las últimas N líneas de un archivo de log en el servidor remoto.',
+    {
+      connection: z.string().describe('Nombre de la conexión'),
+      log_path: z.string().describe('Ruta al archivo de log, ej: /var/log/syslog'),
+      lines: z.number().int().positive().default(50).describe('Número de líneas a leer (default: 50)'),
+    },
+    ({ connection, log_path, lines }) => ssh.tailLog(connection, log_path, lines ?? 50)
+  );
+
+  tool(server, 'ssh_check_ports',
+    'Muestra los puertos TCP en escucha en el servidor remoto (ss o netstat).',
+    {
+      connection: z.string().describe('Nombre de la conexión'),
+    },
+    ({ connection }) => ssh.checkPorts(connection)
+  );
+
+  // ── ASUS Router tools ─────────────────────────────────────────────────────────
+
+  tool(server, 'router_login',
+    `Autentica con el router ASUS y guarda la sesión en memoria.
+Si ASUS_ROUTER_URL, ASUS_ROUTER_USER y ASUS_ROUTER_PASS están en .env, no hace falta pasar parámetros.
+Necesario antes de usar el resto de herramientas del router.`,
+    {
+      url: z.string().optional().describe('URL del router, ej: http://192.168.50.1 (opcional si está en .env)'),
+      username: z.string().optional().describe('Usuario (default: admin o valor de ASUS_ROUTER_USER)'),
+      password: z.string().optional().describe('Contraseña del router'),
+    },
+    ({ url, username, password }) => router.login(url, username, password)
+  );
+
+  tool(server, 'router_get_info',
+    'Obtiene información general del router: modelo, firmware, IP LAN, WAN, DNS, timezone.',
+    {},
+    () => router.getRouterInfo()
+  );
+
+  tool(server, 'router_get_wan_status',
+    'Muestra el estado de la conexión WAN: IP pública, gateway, DNS, tipo de conexión.',
+    {},
+    () => router.getWanStatus()
+  );
+
+  tool(server, 'router_get_health_summary',
+    'Resumen completo del estado del router: info general, WAN, WiFi, mesh y firewall.',
+    {},
+    () => router.getHealthSummary()
+  );
+
+  tool(server, 'router_get_wifi_settings',
+    'Obtiene la configuración WiFi de todas las bandas (2.4 GHz, 5 GHz, 6 GHz): SSID, canal, radio encendido, smart connect.',
+    {},
+    () => router.getWifiSettings()
+  );
+
+  tool(server, 'router_set_wifi_ssid',
+    'Cambia el nombre de red (SSID) de una banda WiFi.',
+    {
+      band: z.enum(['2.4', '5', '6']).describe('Banda WiFi: "2.4", "5" o "6"'),
+      ssid: z.string().min(1).max(32).describe('Nuevo SSID (nombre de red)'),
+    },
+    ({ band, ssid }) => router.setWifiSsid(band, ssid)
+  );
+
+  tool(server, 'router_set_wifi_password',
+    'Cambia la contraseña WiFi de una banda. Activa WPA2/AES automáticamente.',
+    {
+      band: z.enum(['2.4', '5', '6']).describe('Banda WiFi: "2.4", "5" o "6"'),
+      password: z.string().min(8).describe('Nueva contraseña (mínimo 8 caracteres)'),
+    },
+    ({ band, password }) => router.setWifiPassword(band, password)
+  );
+
+  tool(server, 'router_set_wifi_channel',
+    'Cambia el canal WiFi de una banda (útil para reducir interferencias).',
+    {
+      band: z.enum(['2.4', '5', '6']).describe('Banda WiFi: "2.4", "5" o "6"'),
+      channel: z.union([z.string(), z.number()]).describe('Canal. 0 = automático. 2.4GHz: 1-11. 5GHz: 36,40,44,48,149,153,157,161'),
+    },
+    ({ band, channel }) => router.setWifiChannel(band, String(channel))
+  );
+
+  tool(server, 'router_toggle_wifi',
+    'Enciende o apaga la radio WiFi de una banda.',
+    {
+      band: z.enum(['2.4', '5', '6']).describe('Banda WiFi: "2.4", "5" o "6"'),
+      enable: z.boolean().describe('true para encender, false para apagar'),
+    },
+    ({ band, enable }) => router.toggleWifi(band, enable)
+  );
+
+  tool(server, 'router_get_connected_clients',
+    'Lista los dispositivos conectados al router (clientes WiFi y ethernet).',
+    {},
+    () => router.getConnectedClients()
+  );
+
+  tool(server, 'router_get_dhcp_leases',
+    'Muestra la configuración DHCP: rango de IPs, tiempo de lease y asignaciones estáticas.',
+    {},
+    () => router.getDhcpLeases()
+  );
+
+  tool(server, 'router_get_mesh_topology',
+    'Muestra el estado del mesh AiMesh: nodo principal, nodos satélite y tipo de backhaul.',
+    {},
+    () => router.getMeshTopology()
+  );
+
+  tool(server, 'router_get_mesh_nodes',
+    'Lista todos los nodos del mesh AiMesh con su estado de conexión.',
+    {},
+    () => router.getMeshNodes()
+  );
+
+  tool(server, 'router_get_port_forwarding',
+    'Lista las reglas de port forwarding y la configuración DMZ.',
+    {},
+    () => router.getPortForwardingRules()
+  );
+
+  tool(server, 'router_add_port_forwarding',
+    'Agrega una regla de port forwarding para exponer un servicio interno.',
+    {
+      name: z.string().describe('Nombre descriptivo de la regla'),
+      internal_ip: z.string().describe('IP interna del dispositivo, ej: 192.168.50.100'),
+      external_port: z.union([z.string(), z.number()]).describe('Puerto externo o rango, ej: "8080" o "8080:8090"'),
+      internal_port: z.union([z.string(), z.number()]).describe('Puerto interno del dispositivo'),
+      protocol: z.enum(['TCP', 'UDP', 'BOTH']).default('TCP').describe('Protocolo (default: TCP)'),
+    },
+    ({ name, internal_ip, external_port, internal_port, protocol }) =>
+      router.addPortForwardingRule({
+        name,
+        internalIp: internal_ip,
+        externalPort: String(external_port),
+        internalPort: String(internal_port),
+        protocol: protocol ?? 'TCP',
+      })
+  );
+
+  tool(server, 'router_delete_port_forwarding',
+    'Elimina una regla de port forwarding por su nombre.',
+    {
+      rule_name: z.string().describe('Nombre de la regla a eliminar'),
+    },
+    ({ rule_name }) => router.deletePortForwardingRule(rule_name)
+  );
+
+  tool(server, 'router_get_firewall',
+    'Muestra el estado del firewall: protección DoS, IPv6 y logs.',
+    {},
+    () => router.getFirewallSettings()
+  );
+
+  tool(server, 'router_get_qos',
+    'Obtiene la configuración de QoS: tipo, ancho de banda configurado.',
+    {},
+    () => router.getQosSettings()
+  );
+
+  tool(server, 'router_get_dns_settings',
+    'Muestra la configuración DNS: DNS-over-TLS, DNSSEC, DNS del ISP y DNS personalizado.',
+    {},
+    () => router.getDnsSettings()
+  );
+
+  tool(server, 'router_set_custom_dns',
+    'Configura servidores DNS personalizados (ej: 1.1.1.1 y 8.8.8.8, o Pi-hole).',
+    {
+      dns1: z.string().describe('Servidor DNS primario, ej: "1.1.1.1" o "192.168.50.x" para Pi-hole'),
+      dns2: z.string().optional().describe('Servidor DNS secundario (opcional)'),
+    },
+    ({ dns1, dns2 }) => router.setCustomDns(dns1, dns2 ?? '')
+  );
+
+  tool(server, 'router_get_ai_protection',
+    'Muestra el estado de AiProtection (bloqueo de sitios maliciosos, protección de red).',
+    {},
+    () => router.getAiProtectionStatus()
+  );
+
+  tool(server, 'router_get_lan_settings',
+    'Muestra la configuración LAN: IP del router, máscara, rango DHCP.',
+    {},
+    () => router.getLanSettings()
+  );
+
+  tool(server, 'router_get_firmware_info',
+    'Muestra la versión de firmware instalada.',
+    {},
+    () => router.getFirmwareInfo()
+  );
+
+  tool(server, 'router_get_traffic_stats',
+    'Muestra estadísticas de tráfico de red en tiempo real.',
+    {},
+    () => router.getTrafficStats()
+  );
+
+  tool(server, 'router_run_diagnostic',
+    'Ejecuta una herramienta de diagnóstico de red desde el router: ping, nslookup o traceroute.',
+    {
+      type: z.enum(['ping', 'nslookup', 'traceroute']).describe('Tipo de diagnóstico'),
+      target: z.string().describe('Destino: IP o hostname, ej: "8.8.8.8" o "google.com"'),
+    },
+    ({ type, target }) => router.runDiagnostic(type, target)
+  );
+
+  tool(server, 'router_reboot',
+    'Reinicia el router. Perderás conectividad durante ~60 segundos. Confirma con el usuario antes de llamar.',
+    {},
+    () => router.reboot()
+  );
+
+  tool(server, 'router_get_system_stats',
+    'Muestra estadísticas del sistema del router: uso de CPU, memoria y red.',
+    {},
+    () => router.getSystemStats()
+  );
+
   return server;
 }
 
@@ -891,9 +1420,12 @@ const app = express();
 app.use(express.json());
 
 const JENKINS_TOOLS = 20;
-const HA_TOOLS = 24;
+const HA_TOOLS = 43;
 const PG_TOOLS = 22;
 const DOCKER_TOOLS = 19;
+const SSH_TOOLS = 12;
+const ROUTER_TOOLS = 27;
+const TOTAL_TOOLS = JENKINS_TOOLS + HA_TOOLS + PG_TOOLS + DOCKER_TOOLS + SSH_TOOLS + ROUTER_TOOLS;
 
 app.get('/', (_req, res) => {
   res.json({
@@ -901,10 +1433,19 @@ app.get('/', (_req, res) => {
     version: '2.0.0',
     transport: 'StreamableHTTP',
     endpoint: '/mcp',
-    tools: { jenkins: JENKINS_TOOLS, homeassistant: HA_TOOLS, postgres: PG_TOOLS, docker: DOCKER_TOOLS, total: JENKINS_TOOLS + HA_TOOLS + PG_TOOLS + DOCKER_TOOLS },
+    tools: {
+      jenkins: JENKINS_TOOLS,
+      homeassistant: HA_TOOLS,
+      postgres: PG_TOOLS,
+      docker: DOCKER_TOOLS,
+      ssh: SSH_TOOLS,
+      router: ROUTER_TOOLS,
+      total: TOTAL_TOOLS,
+    },
     config: {
       jenkins: process.env.JENKINS_URL || 'not configured',
       homeassistant: process.env.HA_URL || 'not configured',
+      router: process.env.ASUS_ROUTER_URL || 'not configured',
     },
   });
 });
@@ -965,9 +1506,10 @@ app.listen(PORT, HOST, () => {
   console.log(`\n✅ MCP Local Network Admin v2.0.0`);
   console.log(`   Endpoint MCP:   http://localhost:${PORT}/mcp`);
   console.log(`   Health check:   http://localhost:${PORT}/`);
-  console.log(`   Tools:          ${JENKINS_TOOLS} Jenkins + ${HA_TOOLS} Home Assistant + ${PG_TOOLS} PostgreSQL + ${DOCKER_TOOLS} Docker = ${JENKINS_TOOLS + HA_TOOLS + PG_TOOLS + DOCKER_TOOLS} total`);
+  console.log(`   Tools:          ${JENKINS_TOOLS} Jenkins + ${HA_TOOLS} HA + ${PG_TOOLS} PG + ${DOCKER_TOOLS} Docker + ${SSH_TOOLS} SSH + ${ROUTER_TOOLS} Router = ${TOTAL_TOOLS} total`);
   console.log(`   Jenkins:        ${process.env.JENKINS_URL || '⚠️  no configurado (JENKINS_URL)'}`);
-  console.log(`   Home Assistant: ${process.env.HA_URL || '⚠️  no configurado (HA_URL)'}\n`);
+  console.log(`   Home Assistant: ${process.env.HA_URL || '⚠️  no configurado (HA_URL)'}`);
+  console.log(`   Router:         ${process.env.ASUS_ROUTER_URL || '⚠️  no configurado (ASUS_ROUTER_URL)'}\n`);
   console.log(`   Agregar a Claude Code:`);
   console.log(`   claude mcp add --transport http local-network-admin http://localhost:${PORT}/mcp\n`);
 });
