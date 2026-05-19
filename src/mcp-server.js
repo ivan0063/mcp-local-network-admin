@@ -9,11 +9,15 @@ import { JenkinsClient } from './tools/jenkins.js';
 import { HomeAssistantClient } from './tools/homeassistant.js';
 import { PostgresClient } from './tools/postgres.js';
 import { DockerClient } from './tools/docker.js';
+import { SshClient } from './tools/ssh.js';
+import { AsusRouterClient } from './tools/asus-router.js';
 
 const jenkins = new JenkinsClient();
 const ha = new HomeAssistantClient();
 const pg = new PostgresClient();
 const docker = new DockerClient();
+const ssh = new SshClient();
+const router = new AsusRouterClient();
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -878,6 +882,325 @@ Ejemplo de compose_yaml:
     ({ connection }) => docker.listComposeStacks(connection ?? 'local')
   );
 
+  // ── SSH tools ────────────────────────────────────────────────────────────────
+
+  tool(server, 'ssh_connect',
+    `Registra una conexión SSH con un nombre para usarla en el resto de tools.
+Las credenciales se guardan solo en memoria y se pierden al reiniciar el server.
+Soporta autenticación por contraseña o por clave privada (pasar el contenido de la clave, no la ruta).`,
+    {
+      name: z.string().describe('Nombre para identificar esta conexión, ej: "pi", "lab1", "nas"'),
+      host: z.string().describe('IP o hostname del servidor'),
+      port: z.number().int().default(22).describe('Puerto SSH (default: 22)'),
+      username: z.string().describe('Usuario SSH'),
+      password: z.string().optional().describe('Contraseña (alternativa a clave privada)'),
+      private_key: z.string().optional().describe('Contenido de la clave privada SSH (ej: contenido de id_rsa)'),
+      passphrase: z.string().optional().describe('Passphrase de la clave privada (si aplica)'),
+    },
+    ({ name, host, port, username, password, private_key, passphrase }) =>
+      ssh.register(name, { host, port: port ?? 22, username, password, privateKey: private_key, passphrase })
+  );
+
+  tool(server, 'ssh_disconnect',
+    'Elimina una conexión SSH registrada de la memoria.',
+    { name: z.string().describe('Nombre de la conexión a eliminar') },
+    ({ name }) => ssh.unregister(name)
+  );
+
+  tool(server, 'ssh_list_connections',
+    'Lista las conexiones SSH registradas (sin mostrar contraseñas).',
+    {},
+    () => ssh.listConnections()
+  );
+
+  tool(server, 'ssh_exec',
+    `Ejecuta un comando en el servidor remoto y devuelve stdout, stderr y exit code.
+Útil para cualquier operación administrativa: instalar paquetes, ver logs, gestionar servicios, etc.`,
+    {
+      connection: z.string().describe('Nombre de la conexión registrada con ssh_connect'),
+      command: z.string().describe('Comando a ejecutar en el servidor remoto'),
+      timeout: z.number().int().positive().default(60000).describe('Timeout en milisegundos (default: 60000 = 1 minuto)'),
+    },
+    ({ connection, command, timeout }) => ssh.exec(connection, command, { timeout: timeout ?? 60_000 })
+  );
+
+  tool(server, 'ssh_upload_file',
+    'Sube un archivo local al servidor remoto vía SFTP.',
+    {
+      connection: z.string().describe('Nombre de la conexión'),
+      local_path: z.string().describe('Ruta local del archivo a subir'),
+      remote_path: z.string().describe('Ruta destino en el servidor remoto'),
+    },
+    ({ connection, local_path, remote_path }) => ssh.upload(connection, local_path, remote_path)
+  );
+
+  tool(server, 'ssh_download_file',
+    'Descarga un archivo del servidor remoto al sistema local vía SFTP.',
+    {
+      connection: z.string().describe('Nombre de la conexión'),
+      remote_path: z.string().describe('Ruta del archivo en el servidor remoto'),
+      local_path: z.string().describe('Ruta local donde guardar el archivo'),
+    },
+    ({ connection, remote_path, local_path }) => ssh.download(connection, remote_path, local_path)
+  );
+
+  tool(server, 'ssh_read_file',
+    'Lee el contenido de un archivo en el servidor remoto sin necesidad de descargarlo.',
+    {
+      connection: z.string().describe('Nombre de la conexión'),
+      remote_path: z.string().describe('Ruta del archivo a leer en el servidor remoto'),
+    },
+    ({ connection, remote_path }) => ssh.readRemoteFile(connection, remote_path)
+  );
+
+  tool(server, 'ssh_write_file',
+    'Escribe/sobreescribe un archivo en el servidor remoto con el contenido dado.',
+    {
+      connection: z.string().describe('Nombre de la conexión'),
+      remote_path: z.string().describe('Ruta del archivo destino en el servidor remoto'),
+      content: z.string().describe('Contenido a escribir en el archivo'),
+    },
+    ({ connection, remote_path, content }) => ssh.writeRemoteFile(connection, remote_path, content)
+  );
+
+  tool(server, 'ssh_get_system_info',
+    'Obtiene información básica del sistema remoto: OS, CPUs, memoria, disco y uptime.',
+    {
+      connection: z.string().describe('Nombre de la conexión'),
+    },
+    ({ connection }) => ssh.getSystemInfo(connection)
+  );
+
+  tool(server, 'ssh_list_processes',
+    'Lista los procesos en ejecución en el servidor remoto. Opcionalmente filtra por nombre.',
+    {
+      connection: z.string().describe('Nombre de la conexión'),
+      filter: z.string().optional().describe('Filtro de texto para buscar procesos específicos (opcional)'),
+    },
+    ({ connection, filter }) => ssh.listProcesses(connection, filter ?? '')
+  );
+
+  tool(server, 'ssh_tail_log',
+    'Lee las últimas N líneas de un archivo de log en el servidor remoto.',
+    {
+      connection: z.string().describe('Nombre de la conexión'),
+      log_path: z.string().describe('Ruta al archivo de log, ej: /var/log/syslog'),
+      lines: z.number().int().positive().default(50).describe('Número de líneas a leer (default: 50)'),
+    },
+    ({ connection, log_path, lines }) => ssh.tailLog(connection, log_path, lines ?? 50)
+  );
+
+  tool(server, 'ssh_check_ports',
+    'Muestra los puertos TCP en escucha en el servidor remoto (ss o netstat).',
+    {
+      connection: z.string().describe('Nombre de la conexión'),
+    },
+    ({ connection }) => ssh.checkPorts(connection)
+  );
+
+  // ── ASUS Router tools ─────────────────────────────────────────────────────────
+
+  tool(server, 'router_login',
+    `Autentica con el router ASUS y guarda la sesión en memoria.
+Si ASUS_ROUTER_URL, ASUS_ROUTER_USER y ASUS_ROUTER_PASS están en .env, no hace falta pasar parámetros.
+Necesario antes de usar el resto de herramientas del router.`,
+    {
+      url: z.string().optional().describe('URL del router, ej: http://192.168.50.1 (opcional si está en .env)'),
+      username: z.string().optional().describe('Usuario (default: admin o valor de ASUS_ROUTER_USER)'),
+      password: z.string().optional().describe('Contraseña del router'),
+    },
+    ({ url, username, password }) => router.login(url, username, password)
+  );
+
+  tool(server, 'router_get_info',
+    'Obtiene información general del router: modelo, firmware, IP LAN, WAN, DNS, timezone.',
+    {},
+    () => router.getRouterInfo()
+  );
+
+  tool(server, 'router_get_wan_status',
+    'Muestra el estado de la conexión WAN: IP pública, gateway, DNS, tipo de conexión.',
+    {},
+    () => router.getWanStatus()
+  );
+
+  tool(server, 'router_get_health_summary',
+    'Resumen completo del estado del router: info general, WAN, WiFi, mesh y firewall.',
+    {},
+    () => router.getHealthSummary()
+  );
+
+  tool(server, 'router_get_wifi_settings',
+    'Obtiene la configuración WiFi de todas las bandas (2.4 GHz, 5 GHz, 6 GHz): SSID, canal, radio encendido, smart connect.',
+    {},
+    () => router.getWifiSettings()
+  );
+
+  tool(server, 'router_set_wifi_ssid',
+    'Cambia el nombre de red (SSID) de una banda WiFi.',
+    {
+      band: z.enum(['2.4', '5', '6']).describe('Banda WiFi: "2.4", "5" o "6"'),
+      ssid: z.string().min(1).max(32).describe('Nuevo SSID (nombre de red)'),
+    },
+    ({ band, ssid }) => router.setWifiSsid(band, ssid)
+  );
+
+  tool(server, 'router_set_wifi_password',
+    'Cambia la contraseña WiFi de una banda. Activa WPA2/AES automáticamente.',
+    {
+      band: z.enum(['2.4', '5', '6']).describe('Banda WiFi: "2.4", "5" o "6"'),
+      password: z.string().min(8).describe('Nueva contraseña (mínimo 8 caracteres)'),
+    },
+    ({ band, password }) => router.setWifiPassword(band, password)
+  );
+
+  tool(server, 'router_set_wifi_channel',
+    'Cambia el canal WiFi de una banda (útil para reducir interferencias).',
+    {
+      band: z.enum(['2.4', '5', '6']).describe('Banda WiFi: "2.4", "5" o "6"'),
+      channel: z.union([z.string(), z.number()]).describe('Canal. 0 = automático. 2.4GHz: 1-11. 5GHz: 36,40,44,48,149,153,157,161'),
+    },
+    ({ band, channel }) => router.setWifiChannel(band, String(channel))
+  );
+
+  tool(server, 'router_toggle_wifi',
+    'Enciende o apaga la radio WiFi de una banda.',
+    {
+      band: z.enum(['2.4', '5', '6']).describe('Banda WiFi: "2.4", "5" o "6"'),
+      enable: z.boolean().describe('true para encender, false para apagar'),
+    },
+    ({ band, enable }) => router.toggleWifi(band, enable)
+  );
+
+  tool(server, 'router_get_connected_clients',
+    'Lista los dispositivos conectados al router (clientes WiFi y ethernet).',
+    {},
+    () => router.getConnectedClients()
+  );
+
+  tool(server, 'router_get_dhcp_leases',
+    'Muestra la configuración DHCP: rango de IPs, tiempo de lease y asignaciones estáticas.',
+    {},
+    () => router.getDhcpLeases()
+  );
+
+  tool(server, 'router_get_mesh_topology',
+    'Muestra el estado del mesh AiMesh: nodo principal, nodos satélite y tipo de backhaul.',
+    {},
+    () => router.getMeshTopology()
+  );
+
+  tool(server, 'router_get_mesh_nodes',
+    'Lista todos los nodos del mesh AiMesh con su estado de conexión.',
+    {},
+    () => router.getMeshNodes()
+  );
+
+  tool(server, 'router_get_port_forwarding',
+    'Lista las reglas de port forwarding y la configuración DMZ.',
+    {},
+    () => router.getPortForwardingRules()
+  );
+
+  tool(server, 'router_add_port_forwarding',
+    'Agrega una regla de port forwarding para exponer un servicio interno.',
+    {
+      name: z.string().describe('Nombre descriptivo de la regla'),
+      internal_ip: z.string().describe('IP interna del dispositivo, ej: 192.168.50.100'),
+      external_port: z.union([z.string(), z.number()]).describe('Puerto externo o rango, ej: "8080" o "8080:8090"'),
+      internal_port: z.union([z.string(), z.number()]).describe('Puerto interno del dispositivo'),
+      protocol: z.enum(['TCP', 'UDP', 'BOTH']).default('TCP').describe('Protocolo (default: TCP)'),
+    },
+    ({ name, internal_ip, external_port, internal_port, protocol }) =>
+      router.addPortForwardingRule({
+        name,
+        internalIp: internal_ip,
+        externalPort: String(external_port),
+        internalPort: String(internal_port),
+        protocol: protocol ?? 'TCP',
+      })
+  );
+
+  tool(server, 'router_delete_port_forwarding',
+    'Elimina una regla de port forwarding por su nombre.',
+    {
+      rule_name: z.string().describe('Nombre de la regla a eliminar'),
+    },
+    ({ rule_name }) => router.deletePortForwardingRule(rule_name)
+  );
+
+  tool(server, 'router_get_firewall',
+    'Muestra el estado del firewall: protección DoS, IPv6 y logs.',
+    {},
+    () => router.getFirewallSettings()
+  );
+
+  tool(server, 'router_get_qos',
+    'Obtiene la configuración de QoS: tipo, ancho de banda configurado.',
+    {},
+    () => router.getQosSettings()
+  );
+
+  tool(server, 'router_get_dns_settings',
+    'Muestra la configuración DNS: DNS-over-TLS, DNSSEC, DNS del ISP y DNS personalizado.',
+    {},
+    () => router.getDnsSettings()
+  );
+
+  tool(server, 'router_set_custom_dns',
+    'Configura servidores DNS personalizados (ej: 1.1.1.1 y 8.8.8.8, o Pi-hole).',
+    {
+      dns1: z.string().describe('Servidor DNS primario, ej: "1.1.1.1" o "192.168.50.x" para Pi-hole'),
+      dns2: z.string().optional().describe('Servidor DNS secundario (opcional)'),
+    },
+    ({ dns1, dns2 }) => router.setCustomDns(dns1, dns2 ?? '')
+  );
+
+  tool(server, 'router_get_ai_protection',
+    'Muestra el estado de AiProtection (bloqueo de sitios maliciosos, protección de red).',
+    {},
+    () => router.getAiProtectionStatus()
+  );
+
+  tool(server, 'router_get_lan_settings',
+    'Muestra la configuración LAN: IP del router, máscara, rango DHCP.',
+    {},
+    () => router.getLanSettings()
+  );
+
+  tool(server, 'router_get_firmware_info',
+    'Muestra la versión de firmware instalada.',
+    {},
+    () => router.getFirmwareInfo()
+  );
+
+  tool(server, 'router_get_traffic_stats',
+    'Muestra estadísticas de tráfico de red en tiempo real.',
+    {},
+    () => router.getTrafficStats()
+  );
+
+  tool(server, 'router_run_diagnostic',
+    'Ejecuta una herramienta de diagnóstico de red desde el router: ping, nslookup o traceroute.',
+    {
+      type: z.enum(['ping', 'nslookup', 'traceroute']).describe('Tipo de diagnóstico'),
+      target: z.string().describe('Destino: IP o hostname, ej: "8.8.8.8" o "google.com"'),
+    },
+    ({ type, target }) => router.runDiagnostic(type, target)
+  );
+
+  tool(server, 'router_reboot',
+    'Reinicia el router. Perderás conectividad durante ~60 segundos. Confirma con el usuario antes de llamar.',
+    {},
+    () => router.reboot()
+  );
+
+  tool(server, 'router_get_system_stats',
+    'Muestra estadísticas del sistema del router: uso de CPU, memoria y red.',
+    {},
+    () => router.getSystemStats()
+  );
+
   return server;
 }
 
@@ -894,6 +1217,9 @@ const JENKINS_TOOLS = 20;
 const HA_TOOLS = 24;
 const PG_TOOLS = 22;
 const DOCKER_TOOLS = 19;
+const SSH_TOOLS = 12;
+const ROUTER_TOOLS = 27;
+const TOTAL_TOOLS = JENKINS_TOOLS + HA_TOOLS + PG_TOOLS + DOCKER_TOOLS + SSH_TOOLS + ROUTER_TOOLS;
 
 app.get('/', (_req, res) => {
   res.json({
@@ -901,10 +1227,19 @@ app.get('/', (_req, res) => {
     version: '2.0.0',
     transport: 'StreamableHTTP',
     endpoint: '/mcp',
-    tools: { jenkins: JENKINS_TOOLS, homeassistant: HA_TOOLS, postgres: PG_TOOLS, docker: DOCKER_TOOLS, total: JENKINS_TOOLS + HA_TOOLS + PG_TOOLS + DOCKER_TOOLS },
+    tools: {
+      jenkins: JENKINS_TOOLS,
+      homeassistant: HA_TOOLS,
+      postgres: PG_TOOLS,
+      docker: DOCKER_TOOLS,
+      ssh: SSH_TOOLS,
+      router: ROUTER_TOOLS,
+      total: TOTAL_TOOLS,
+    },
     config: {
       jenkins: process.env.JENKINS_URL || 'not configured',
       homeassistant: process.env.HA_URL || 'not configured',
+      router: process.env.ASUS_ROUTER_URL || 'not configured',
     },
   });
 });
@@ -965,9 +1300,10 @@ app.listen(PORT, HOST, () => {
   console.log(`\n✅ MCP Local Network Admin v2.0.0`);
   console.log(`   Endpoint MCP:   http://localhost:${PORT}/mcp`);
   console.log(`   Health check:   http://localhost:${PORT}/`);
-  console.log(`   Tools:          ${JENKINS_TOOLS} Jenkins + ${HA_TOOLS} Home Assistant + ${PG_TOOLS} PostgreSQL + ${DOCKER_TOOLS} Docker = ${JENKINS_TOOLS + HA_TOOLS + PG_TOOLS + DOCKER_TOOLS} total`);
+  console.log(`   Tools:          ${JENKINS_TOOLS} Jenkins + ${HA_TOOLS} HA + ${PG_TOOLS} PG + ${DOCKER_TOOLS} Docker + ${SSH_TOOLS} SSH + ${ROUTER_TOOLS} Router = ${TOTAL_TOOLS} total`);
   console.log(`   Jenkins:        ${process.env.JENKINS_URL || '⚠️  no configurado (JENKINS_URL)'}`);
-  console.log(`   Home Assistant: ${process.env.HA_URL || '⚠️  no configurado (HA_URL)'}\n`);
+  console.log(`   Home Assistant: ${process.env.HA_URL || '⚠️  no configurado (HA_URL)'}`);
+  console.log(`   Router:         ${process.env.ASUS_ROUTER_URL || '⚠️  no configurado (ASUS_ROUTER_URL)'}\n`);
   console.log(`   Agregar a Claude Code:`);
   console.log(`   claude mcp add --transport http local-network-admin http://localhost:${PORT}/mcp\n`);
 });
