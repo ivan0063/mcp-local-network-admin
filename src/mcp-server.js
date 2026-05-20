@@ -898,20 +898,28 @@ Ejemplo de columnas:
   const conn = z.string().default('local').describe('Nombre de la conexión (default: "local"). Usa docker_connect para agregar servidores remotos.');
 
   tool(server, 'docker_connect',
-    `Conecta a un servidor Docker remoto vía su API REST y lo registra con un nombre.
+    `Conecta a un servidor Docker remoto y lo registra con un nombre.
 La conexión queda disponible para el resto de tools usando ese nombre.
 
-Para exponer la API REST en un lab server Linux:
+Conexión SSH (recomendada — no requiere configuración en el servidor):
+  Solo necesita SSH activo y Docker instalado.
+  Autenticación por clave privada (pasar contenido del archivo, ej: ~/.ssh/id_rsa) o contraseña.
+
+Conexión HTTP/HTTPS (alternativa — requiere exponer la API REST):
   Editar /lib/systemd/system/docker.service, agregar a ExecStart:
   -H tcp://0.0.0.0:2375 -H unix:///var/run/docker.sock
   Luego: systemctl daemon-reload && systemctl restart docker`,
     {
       name: z.string().describe('Nombre para identificar este servidor, ej: "lab1", "pi4", "nas"'),
       host: z.string().describe('IP o hostname del servidor Docker, ej: "192.168.1.100"'),
-      port: z.number().int().default(2375).describe('Puerto de la API REST (default: 2375)'),
-      protocol: z.enum(['http', 'https']).default('http').describe('Protocolo (default: http)'),
+      protocol: z.enum(['ssh', 'http', 'https']).default('ssh').describe('Protocolo: ssh (default, recomendado), http o https'),
+      port: z.number().int().optional().describe('Puerto (default: 22 para SSH, 2375 para HTTP/HTTPS)'),
+      username: z.string().default('root').describe('Usuario SSH (solo protocolo ssh, default: "root")'),
+      private_key: z.string().optional().describe('Contenido de la clave privada SSH, ej: contenido de ~/.ssh/id_rsa'),
+      password: z.string().optional().describe('Contraseña SSH (alternativa a private_key)'),
     },
-    ({ name, host, port, protocol }) => docker.connect(name, host, port ?? 2375, protocol ?? 'http')
+    ({ name, host, protocol, port, username, private_key, password }) =>
+      docker.connect(name, host, { port, protocol: protocol ?? 'ssh', username: username ?? 'root', privateKey: private_key, password })
   );
 
   tool(server, 'docker_disconnect',
@@ -1048,7 +1056,7 @@ Para exponer la API REST en un lab server Linux:
 
   tool(server, 'docker_compose_up',
     `Crea y levanta un stack desde un YAML de docker-compose pasado como string.
-Para servidores remotos, usa el parámetro host directamente (no necesita docker_connect).
+Para servidores remotos, registra primero la conexión con docker_connect y usa el parámetro connection.
 
 Ejemplo de compose_yaml:
   services:
@@ -1062,11 +1070,10 @@ Ejemplo de compose_yaml:
       compose_yaml: z.string().describe('Contenido completo del docker-compose.yml'),
       pull: z.boolean().default(false).describe('Pull de imágenes antes de levantar'),
       build: z.boolean().default(false).describe('Rebuild de imágenes con build context'),
-      host: z.string().optional().describe('IP del servidor remoto (opcional, omitir para local)'),
-      port: z.number().int().default(2375).describe('Puerto Docker del servidor remoto (default: 2375)'),
+      connection: conn,
     },
-    ({ project_name, compose_yaml, pull, build, host, port }) =>
-      docker.composeUp(project_name, compose_yaml, { pull: pull ?? false, build: build ?? false, host, port: port ?? 2375 })
+    ({ project_name, compose_yaml, pull, build, connection }) =>
+      docker.composeUp(project_name, compose_yaml, { pull: pull ?? false, build: build ?? false, connection: connection ?? 'local' })
   );
 
   tool(server, 'docker_compose_down',
@@ -1075,11 +1082,10 @@ Ejemplo de compose_yaml:
       project_name: z.string().describe('Nombre del proyecto compose'),
       remove_volumes: z.boolean().default(false).describe('Eliminar también los volúmenes del stack'),
       remove_images: z.boolean().default(false).describe('Eliminar también las imágenes usadas'),
-      host: z.string().optional().describe('IP del servidor remoto (opcional, omitir para local)'),
-      port: z.number().int().default(2375).describe('Puerto Docker del servidor remoto (default: 2375)'),
+      connection: conn,
     },
-    ({ project_name, remove_volumes, remove_images, host, port }) =>
-      docker.composeDown(project_name, { removeVolumes: remove_volumes ?? false, removeImages: remove_images ?? false, host, port: port ?? 2375 })
+    ({ project_name, remove_volumes, remove_images, connection }) =>
+      docker.composeDown(project_name, { removeVolumes: remove_volumes ?? false, removeImages: remove_images ?? false, connection: connection ?? 'local' })
   );
 
   tool(server, 'docker_list_compose_stacks',
