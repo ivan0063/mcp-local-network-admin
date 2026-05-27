@@ -11,6 +11,7 @@ import { PostgresClient } from './tools/postgres.js';
 import { DockerClient } from './tools/docker.js';
 import { SshClient } from './tools/ssh.js';
 import { AsusRouterClient } from './tools/asus-router.js';
+import { MqttClient } from './tools/mqtt.js';
 
 const jenkins = new JenkinsClient();
 const ha = new HomeAssistantClient();
@@ -18,6 +19,7 @@ const pg = new PostgresClient();
 const docker = new DockerClient();
 const ssh = new SshClient();
 const router = new AsusRouterClient();
+const mqttClient = new MqttClient();
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -1407,6 +1409,149 @@ Necesario antes de usar el resto de herramientas del router.`,
     () => router.getSystemStats()
   );
 
+  // ── MQTT / Mosquitto tools ───────────────────────────────────────────────────
+
+  tool(server, 'mqtt_connect',
+    `Registra un broker MQTT con un nombre para usarlo en el resto de herramientas.
+Las credenciales se guardan solo en memoria. Soporta brokers sin autenticación, con usuario/contraseña y TLS (mqtts).
+Ejemplos: broker local Mosquitto en 192.168.1.x:1883, Home Assistant MQTT add-on, broker en la nube.`,
+    {
+      name: z.string().describe('Nombre para identificar el broker, ej: "local", "ha", "cloud"'),
+      host: z.string().describe('IP o hostname del broker MQTT, ej: "192.168.1.10" o "localhost"'),
+      port: z.number().int().default(1883).describe('Puerto del broker (default: 1883, TLS: 8883)'),
+      username: z.string().optional().describe('Usuario MQTT (opcional)'),
+      password: z.string().optional().describe('Contraseña MQTT (opcional)'),
+      tls: z.boolean().default(false).describe('Usar TLS/SSL (mqtts://) — default: false'),
+      client_id_prefix: z.string().default('mcp').describe('Prefijo del client ID (default: "mcp")'),
+    },
+    ({ name, host, port, username, password, tls, client_id_prefix }) =>
+      mqttClient.register(name, {
+        host,
+        port: port ?? 1883,
+        username,
+        password,
+        tls: tls ?? false,
+        clientIdPrefix: client_id_prefix ?? 'mcp',
+      })
+  );
+
+  tool(server, 'mqtt_disconnect',
+    'Elimina un broker MQTT registrado de la memoria.',
+    { name: z.string().describe('Nombre del broker a eliminar') },
+    ({ name }) => mqttClient.unregister(name)
+  );
+
+  tool(server, 'mqtt_list_brokers',
+    'Lista todos los brokers MQTT registrados (sin mostrar contraseñas).',
+    {},
+    () => mqttClient.listBrokers()
+  );
+
+  tool(server, 'mqtt_test_connection',
+    'Prueba la conectividad con un broker MQTT registrado. Útil para verificar host, puerto y credenciales.',
+    { broker: z.string().describe('Nombre del broker registrado con mqtt_connect') },
+    ({ broker }) => mqttClient.testConnection(broker)
+  );
+
+  tool(server, 'mqtt_publish',
+    `Publica un mensaje de texto en un topic MQTT.
+Soporta QoS 0 (at most once), 1 (at least once) y 2 (exactly once).
+Usa retain: true para que el broker guarde el último valor del topic.`,
+    {
+      broker: z.string().describe('Nombre del broker registrado con mqtt_connect'),
+      topic: z.string().describe('Topic MQTT, ej: "casa/salon/temperatura" o "home/light/1/set"'),
+      payload: z.string().describe('Contenido del mensaje'),
+      qos: z.union([z.literal(0), z.literal(1), z.literal(2)]).default(0).describe('Nivel de QoS (default: 0)'),
+      retain: z.boolean().default(false).describe('Guardar mensaje como retenido en el broker (default: false)'),
+    },
+    ({ broker, topic, payload, qos, retain }) =>
+      mqttClient.publish(broker, topic, payload, { qos: qos ?? 0, retain: retain ?? false })
+  );
+
+  tool(server, 'mqtt_publish_json',
+    'Publica un objeto JSON como payload en un topic MQTT. Serializa automáticamente el objeto.',
+    {
+      broker: z.string().describe('Nombre del broker registrado con mqtt_connect'),
+      topic: z.string().describe('Topic MQTT destino'),
+      payload: z.record(z.unknown()).describe('Objeto JSON a publicar, ej: {"state": "on", "brightness": 200}'),
+      qos: z.union([z.literal(0), z.literal(1), z.literal(2)]).default(0).describe('Nivel de QoS (default: 0)'),
+      retain: z.boolean().default(false).describe('Guardar como retenido (default: false)'),
+    },
+    ({ broker, topic, payload, qos, retain }) =>
+      mqttClient.publishJson(broker, topic, payload, { qos: qos ?? 0, retain: retain ?? false })
+  );
+
+  tool(server, 'mqtt_subscribe',
+    `Suscribe a un topic o patrón MQTT y recoge los mensajes recibidos durante un tiempo.
+Soporta wildcards: '+' (un nivel) y '#' (todos los niveles inferiores).
+Ejemplos: "casa/#", "sensors/+/temperature", "homeassistant/+/+/state".`,
+    {
+      broker: z.string().describe('Nombre del broker registrado con mqtt_connect'),
+      topic: z.string().describe('Topic o patrón MQTT, ej: "casa/#" o "sensor/+/value"'),
+      timeout: z.number().int().positive().default(5000).describe('Tiempo de escucha en milisegundos (default: 5000)'),
+      max_messages: z.number().int().positive().default(20).describe('Máximo de mensajes a recoger antes de parar (default: 20)'),
+      qos: z.union([z.literal(0), z.literal(1), z.literal(2)]).default(0).describe('Nivel de QoS (default: 0)'),
+    },
+    ({ broker, topic, timeout, max_messages, qos }) =>
+      mqttClient.subscribe(broker, topic, {
+        timeout: timeout ?? 5_000,
+        maxMessages: max_messages ?? 20,
+        qos: qos ?? 0,
+      })
+  );
+
+  tool(server, 'mqtt_get_retained',
+    'Obtiene el mensaje retenido en un topic específico. Devuelve null si no hay mensaje retenido.',
+    {
+      broker: z.string().describe('Nombre del broker registrado con mqtt_connect'),
+      topic: z.string().describe('Topic exacto del que leer el mensaje retenido'),
+    },
+    ({ broker, topic }) => mqttClient.getRetained(broker, topic)
+  );
+
+  tool(server, 'mqtt_clear_retained',
+    'Elimina el mensaje retenido de un topic publicando un payload vacío con retain=true.',
+    {
+      broker: z.string().describe('Nombre del broker registrado con mqtt_connect'),
+      topic: z.string().describe('Topic cuyo mensaje retenido se quiere eliminar'),
+    },
+    ({ broker, topic }) => mqttClient.clearRetained(broker, topic)
+  );
+
+  tool(server, 'mqtt_get_broker_stats',
+    `Obtiene estadísticas del broker Mosquitto via el topic especial $SYS.
+Devuelve métricas como clientes conectados, mensajes enviados/recibidos, suscripciones activas y versión del broker.
+Nota: algunos brokers desactivan $SYS por configuración.`,
+    {
+      broker: z.string().describe('Nombre del broker registrado con mqtt_connect'),
+      timeout: z.number().int().positive().default(4000).describe('Tiempo de espera para recoger stats en ms (default: 4000)'),
+    },
+    ({ broker, timeout }) => mqttClient.getBrokerStats(broker, { timeout: timeout ?? 4_000 })
+  );
+
+  tool(server, 'mqtt_list_topics',
+    `Descubre los topics activos en el broker suscribiéndose al wildcard '#' durante un tiempo.
+Devuelve la lista de topics únicos que publicaron mensajes en ese intervalo.
+Útil para explorar la estructura de topics de un broker nuevo.`,
+    {
+      broker: z.string().describe('Nombre del broker registrado con mqtt_connect'),
+      timeout: z.number().int().positive().default(4000).describe('Tiempo de escucha en milisegundos (default: 4000)'),
+      max_messages: z.number().int().positive().default(200).describe('Máximo de mensajes a muestrear (default: 200)'),
+    },
+    ({ broker, timeout, max_messages }) =>
+      mqttClient.listTopics(broker, { timeout: timeout ?? 4_000, maxMessages: max_messages ?? 200 })
+  );
+
+  tool(server, 'mqtt_list_clients',
+    `Obtiene información sobre clientes conectados al broker Mosquitto via $SYS/broker/clients.
+Muestra clientes activos, inactivos, máximo histórico y total de sesiones.
+Requiere que el broker publique estadísticas $SYS (habilitado por defecto en Mosquitto).`,
+    {
+      broker: z.string().describe('Nombre del broker registrado con mqtt_connect'),
+    },
+    ({ broker }) => mqttClient.listClients(broker)
+  );
+
   return server;
 }
 
@@ -1425,7 +1570,8 @@ const PG_TOOLS = 22;
 const DOCKER_TOOLS = 19;
 const SSH_TOOLS = 12;
 const ROUTER_TOOLS = 27;
-const TOTAL_TOOLS = JENKINS_TOOLS + HA_TOOLS + PG_TOOLS + DOCKER_TOOLS + SSH_TOOLS + ROUTER_TOOLS;
+const MQTT_TOOLS = 12;
+const TOTAL_TOOLS = JENKINS_TOOLS + HA_TOOLS + PG_TOOLS + DOCKER_TOOLS + SSH_TOOLS + ROUTER_TOOLS + MQTT_TOOLS;
 
 app.get('/', (_req, res) => {
   res.json({
@@ -1440,6 +1586,7 @@ app.get('/', (_req, res) => {
       docker: DOCKER_TOOLS,
       ssh: SSH_TOOLS,
       router: ROUTER_TOOLS,
+      mqtt: MQTT_TOOLS,
       total: TOTAL_TOOLS,
     },
     config: {
