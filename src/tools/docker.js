@@ -4,39 +4,53 @@ import { writeFileSync, unlinkSync } from 'node:fs';
 import { promisify } from 'node:util';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { Client as SshClient } from 'ssh2';
 
 const execFileAsync = promisify(execFile);
 
 /**
- * Docker Client — soporta múltiples hosts remotos vía Docker REST API.
+ * Docker Client — soporta múltiples hosts remotos vía SSH (recomendado) o Docker REST API.
  *
  * Conexión local (default):  socket /var/run/docker.sock o DOCKER_HOST env
- * Conexión remota:           docker_connect con host:port del servidor
- *
- * Para exponer la API REST en un lab server (Linux):
- *   Editar /lib/systemd/system/docker.service:
- *   ExecStart=... -H tcp://0.0.0.0:2375 -H unix:///var/run/docker.sock
- *   systemctl daemon-reload && systemctl restart docker
+ * Conexión SSH (recomendada): docker_connect con protocol: 'ssh', no requiere exponer la API REST
+ * Conexión HTTP/HTTPS:       requiere exponer la API REST en el servidor remoto
  */
 export class DockerClient {
   constructor() {
     // 'local' siempre disponible — usa socket local o DOCKER_HOST
     this.connections = new Map([
-      ['local', { docker: new Docker(), label: 'local (socket)' }],
+      ['local', { docker: new Docker(), label: 'local (socket)', type: 'local' }],
     ]);
   }
 
   // ─── Gestión de conexiones ────────────────────────────────────
 
-  async connect(name, host, port = 2375, protocol = 'http') {
-    const docker = new Docker({ host, port, protocol });
-    // Verificar conectividad antes de registrar
+  async connect(name, host, { port, protocol = 'ssh', username = 'root', privateKey, password } = {}) {
+    let docker;
+    let label;
+    let meta;
+
+    if (protocol === 'ssh') {
+      const sshPort = port ?? 22;
+      const sshOptions = {};
+      if (privateKey) sshOptions.privateKey = privateKey;
+      if (password) sshOptions.password = password;
+      docker = new Docker({ protocol: 'ssh', host, port: sshPort, username, sshOptions });
+      label = `ssh://${username}@${host}:${sshPort}`;
+      meta = { docker, label, type: 'ssh', host, port: sshPort, username, privateKey, password };
+    } else {
+      const tcpPort = port ?? 2375;
+      docker = new Docker({ host, port: tcpPort, protocol: protocol ?? 'http' });
+      label = `${protocol ?? 'http'}://${host}:${tcpPort}`;
+      meta = { docker, label, type: 'http', host, port: tcpPort };
+    }
+
     const version = await docker.version();
-    this.connections.set(name, { docker, label: `${protocol}://${host}:${port}` });
+    this.connections.set(name, meta);
     return {
       success: true,
       connection: name,
-      host: `${protocol}://${host}:${port}`,
+      host: label,
       docker_version: version.Version,
       os: version.Os,
       arch: version.Arch,
@@ -209,36 +223,120 @@ export class DockerClient {
 
   // ─── Docker Compose ───────────────────────────────────────────
 
-  async composeUp(projectName, composeYaml, { pull = false, build = false, host = null, port = 2375 } = {}) {
+  async composeUp(projectName, composeYaml, { pull = false, build = false, connection = 'local' } = {}) {
+    const connEntry = this.connections.get(connection);
+    if (!connEntry) throw new Error(`Conexión '${connection}' no encontrada. Usa docker_connect primero.`);
+
+    if (connEntry.type === 'ssh') {
+      return this._composeViaSSH('up', projectName, composeYaml, { pull, build }, connEntry);
+    }
+
     const tmpFile = join(tmpdir(), `mcp-compose-${Date.now()}.yml`);
     try {
       writeFileSync(tmpFile, composeYaml, 'utf8');
       const args = ['compose', '-p', projectName, '-f', tmpFile, 'up', '-d'];
       if (pull) args.push('--pull', 'always');
       if (build) args.push('--build');
-      const env = host ? { ...process.env, DOCKER_HOST: `tcp://${host}:${port}` } : process.env;
+      const env = connEntry.type === 'http'
+        ? { ...process.env, DOCKER_HOST: `tcp://${connEntry.host}:${connEntry.port}` }
+        : process.env;
       const { stdout, stderr } = await execFileAsync('docker', args, { timeout: 120_000, env });
-      return { success: true, project: projectName, host: host ?? 'local', output: (stdout + stderr).trim() };
+      return { success: true, project: projectName, connection, output: (stdout + stderr).trim() };
     } finally {
       try { unlinkSync(tmpFile); } catch {}
     }
   }
 
-  async composeDown(projectName, { removeVolumes = false, removeImages = false, host = null, port = 2375 } = {}) {
+  async composeDown(projectName, { removeVolumes = false, removeImages = false, connection = 'local' } = {}) {
+    const connEntry = this.connections.get(connection);
+    if (!connEntry) throw new Error(`Conexión '${connection}' no encontrada. Usa docker_connect primero.`);
+
+    if (connEntry.type === 'ssh') {
+      return this._composeViaSSH('down', projectName, null, { removeVolumes, removeImages }, connEntry);
+    }
+
     const args = ['compose', '-p', projectName, 'down'];
     if (removeVolumes) args.push('-v');
     if (removeImages) args.push('--rmi', 'all');
-    const env = host ? { ...process.env, DOCKER_HOST: `tcp://${host}:${port}` } : process.env;
+    const env = connEntry.type === 'http'
+      ? { ...process.env, DOCKER_HOST: `tcp://${connEntry.host}:${connEntry.port}` }
+      : process.env;
     const { stdout, stderr } = await execFileAsync('docker', args, { timeout: 60_000, env });
-    return { success: true, project: projectName, host: host ?? 'local', output: (stdout + stderr).trim() };
+    return { success: true, project: projectName, connection, output: (stdout + stderr).trim() };
+  }
+
+  _composeViaSSH(action, projectName, composeYaml, opts, { host, port, username, privateKey, password }) {
+    return new Promise((resolve, reject) => {
+      const ssh = new SshClient();
+
+      ssh.on('ready', () => {
+        let cmd;
+        if (action === 'up') {
+          const remoteTmpFile = `/tmp/mcp-compose-${Date.now()}.yml`;
+          // base64-encode the YAML to avoid shell quoting issues
+          const b64 = Buffer.from(composeYaml).toString('base64');
+          let upArgs = `docker compose -p ${projectName} -f ${remoteTmpFile} up -d`;
+          if (opts.pull) upArgs += ' --pull always';
+          if (opts.build) upArgs += ' --build';
+          cmd = `echo '${b64}' | base64 -d > ${remoteTmpFile} && ${upArgs}; rc=$?; rm -f ${remoteTmpFile}; exit $rc`;
+        } else {
+          let downArgs = `docker compose -p ${projectName} down`;
+          if (opts.removeVolumes) downArgs += ' -v';
+          if (opts.removeImages) downArgs += ' --rmi all';
+          cmd = downArgs;
+        }
+
+        ssh.exec(cmd, (err, stream) => {
+          if (err) { ssh.end(); return reject(err); }
+          let output = '';
+          stream.on('data', d => { output += d.toString(); });
+          stream.stderr.on('data', d => { output += d.toString(); });
+          stream.on('close', code => {
+            ssh.end();
+            if (code !== 0) reject(new Error(`Compose ${action} failed (exit ${code}):\n${output.trim()}`));
+            else resolve({ success: true, project: projectName, host: `${username}@${host}`, output: output.trim() });
+          });
+        });
+      });
+
+      ssh.on('error', reject);
+
+      const connOpts = { host, port, username };
+      if (privateKey) connOpts.privateKey = privateKey;
+      else if (password) connOpts.password = password;
+      ssh.connect(connOpts);
+    });
   }
 
   async listComposeStacks(connection = 'local') {
     const connEntry = this.connections.get(connection);
     if (!connEntry) throw new Error(`Conexión '${connection}' no encontrada.`);
 
+    if (connEntry.type === 'ssh') {
+      return new Promise((resolve, reject) => {
+        const { host, port, username, privateKey, password } = connEntry;
+        const ssh = new SshClient();
+        ssh.on('ready', () => {
+          ssh.exec('docker compose ls --format json 2>/dev/null || echo "[]"', (err, stream) => {
+            if (err) { ssh.end(); return reject(err); }
+            let out = '';
+            stream.on('data', d => { out += d.toString(); });
+            stream.stderr.on('data', d => { out += d.toString(); });
+            stream.on('close', () => {
+              ssh.end();
+              try { resolve(JSON.parse(out.trim())); } catch { resolve([]); }
+            });
+          });
+        });
+        ssh.on('error', reject);
+        const connOpts = { host, port, username };
+        if (privateKey) connOpts.privateKey = privateKey;
+        else if (password) connOpts.password = password;
+        ssh.connect(connOpts);
+      });
+    }
+
     try {
-      // Intentar con docker compose ls si es conexión local
       if (connection === 'local') {
         const { stdout } = await execFileAsync('docker', ['compose', 'ls', '--format', 'json']);
         return JSON.parse(stdout);
