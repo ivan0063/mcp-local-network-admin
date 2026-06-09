@@ -527,6 +527,214 @@ export class HomeAssistantClient {
     });
     return res.json();
   }
+
+  // ─── Descubrimiento de servicios ──────────────────────────────
+
+  /** Lista todos los servicios disponibles con sus esquemas de parámetros */
+  async getServices(domain = null) {
+    const path = domain ? `/services/${domain}` : '/services';
+    const res = await this.request(path);
+    return res.json();
+  }
+
+  // ─── Escenas CRUD ─────────────────────────────────────────────
+
+  /** Crea una nueva escena en modo storage */
+  async createScene(config) {
+    const res = await this.request('/config/scene/config', {
+      method: 'POST',
+      body: JSON.stringify(config),
+    });
+    return res.json();
+  }
+
+  /** Actualiza una escena existente por su ID */
+  async updateScene(sceneId, config) {
+    const res = await this.request(`/config/scene/config/${sceneId}`, {
+      method: 'POST',
+      body: JSON.stringify({ ...config, id: sceneId }),
+    });
+    return res.json();
+  }
+
+  /** Elimina una escena por su ID */
+  async deleteScene(sceneId) {
+    await this.request(`/config/scene/config/${sceneId}`, { method: 'DELETE' });
+    return { success: true, deleted: sceneId };
+  }
+
+  // ─── Scripts CRUD ─────────────────────────────────────────────
+
+  /** Crea o actualiza un script en modo storage */
+  async createOrUpdateScript(scriptId, config) {
+    const res = await this.request(`/config/script/config/${scriptId}`, {
+      method: 'POST',
+      body: JSON.stringify(config),
+    });
+    return res.json();
+  }
+
+  /** Elimina un script por su ID */
+  async deleteScript(scriptId) {
+    await this.request(`/config/script/config/${scriptId}`, { method: 'DELETE' });
+    return { success: true, deleted: scriptId };
+  }
+
+  // ─── Operaciones del sistema ──────────────────────────────────
+
+  /** Obtiene info del core de HA: versión, estado, ubicación */
+  async getCoreInfo() {
+    const res = await this.request('/');
+    return res.json();
+  }
+
+  /** Valida la configuración YAML sin aplicar cambios */
+  async checkConfig() {
+    const res = await this.request('/config/core/check_config', { method: 'POST' });
+    return res.json();
+  }
+
+  /** Reinicia Home Assistant core */
+  async restart() {
+    await this.request('/config/core/restart', { method: 'POST' });
+    return { success: true, message: 'Home Assistant restart initiated. Connectivity will be lost for ~30s.' };
+  }
+
+  // ─── Gestión de integraciones ─────────────────────────────────
+
+  /** Lista todas las integraciones/config entries instaladas */
+  async listIntegrations() {
+    const res = await this.request('/config/config_entries/entry');
+    return res.json();
+  }
+
+  /** Recarga una integración sin reiniciar HA */
+  async reloadIntegration(entryId) {
+    const res = await this.request(`/config/config_entries/entry/${entryId}/reload`, {
+      method: 'POST',
+    });
+    return res.json();
+  }
+
+  // ─── Add-ons (solo HA OS / Supervised) ───────────────────────
+
+  /** Lista todos los add-ons instalados. Solo disponible en Home Assistant OS o Supervised. */
+  async listAddons() {
+    const res = await this.request('/hassio/addons');
+    const data = await res.json();
+    return data?.data?.addons ?? data;
+  }
+
+  /** Obtiene info detallada de un add-on */
+  async getAddonInfo(slug) {
+    const res = await this.request(`/hassio/addons/${slug}/info`);
+    const data = await res.json();
+    return data?.data ?? data;
+  }
+
+  /** Inicia un add-on */
+  async startAddon(slug) {
+    const res = await this.request(`/hassio/addons/${slug}/start`, { method: 'POST' });
+    return res.json();
+  }
+
+  /** Detiene un add-on */
+  async stopAddon(slug) {
+    const res = await this.request(`/hassio/addons/${slug}/stop`, { method: 'POST' });
+    return res.json();
+  }
+
+  /** Reinicia un add-on */
+  async restartAddon(slug) {
+    const res = await this.request(`/hassio/addons/${slug}/restart`, { method: 'POST' });
+    return res.json();
+  }
+
+  // ─── Calendarios ──────────────────────────────────────────────
+
+  /** Lista todos los calendarios integrados en HA */
+  async listCalendars() {
+    const res = await this.request('/calendars');
+    return res.json();
+  }
+
+  /**
+   * Obtiene los eventos de un calendario en un rango de fechas.
+   * start/end: ISO 8601, ej: '2024-12-01T00:00:00.000Z'
+   */
+  async getCalendarEvents(calendarEntityId, start, end) {
+    const params = new URLSearchParams({ start, end });
+    const res = await this.request(`/calendars/${calendarEntityId}?${params}`);
+    return res.json();
+  }
+
+  // ─── Webhooks ─────────────────────────────────────────────────
+
+  /** Dispara un webhook de HA por su ID */
+  async triggerWebhook(webhookId, data = {}) {
+    const res = await this.request(`/webhook/${webhookId}`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+    const text = await res.text();
+    try { return JSON.parse(text); } catch { return { result: text }; }
+  }
+
+  // ─── Backups ──────────────────────────────────────────────────
+
+  /** Lista todos los backups disponibles */
+  async listBackups() {
+    const res = await this.request('/backup/info');
+    const data = await res.json();
+    return data?.data ?? data;
+  }
+
+  /** Crea un backup completo. Operación asíncrona — puede tardar varios minutos. */
+  async createBackup(name = null) {
+    const body = name ? { name } : {};
+    const res = await this.request('/backup/full', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    return data?.data ?? data;
+  }
+
+  // ─── Recorder ─────────────────────────────────────────────────
+
+  /** Purga el historial antiguo del recorder manteniendo los últimos N días */
+  async purgeHistory(keepDays = 30, repack = false) {
+    const res = await this.request('/recorder/purge', {
+      method: 'POST',
+      body: JSON.stringify({ keep_days: keepDays, repack }),
+    });
+    return res.json();
+  }
+
+  // ─── Floor y Label registries ─────────────────────────────────
+
+  /** Lista los pisos/plantas configurados (HA 2023.9+) */
+  async listFloors() {
+    const res = await this.request('/config/floor_registry/list');
+    return res.json();
+  }
+
+  /** Lista las etiquetas configuradas (HA 2024.4+) */
+  async listLabels() {
+    const res = await this.request('/config/label_registry/list');
+    return res.json();
+  }
+
+  // ─── Intent ───────────────────────────────────────────────────
+
+  /** Envía un intent de lenguaje natural a HA para ejecutar acciones */
+  async handleIntent(name, slots = {}) {
+    const res = await this.request('/intent/handle', {
+      method: 'POST',
+      body: JSON.stringify({ name, data: slots }),
+    });
+    return res.json();
+  }
 }
 
 // ─── Helpers para generar configs Lovelace ───────────────────────────────────

@@ -651,6 +651,230 @@ Ejemplo: temperatura de los últimos 7 días agrupada por día:
       ha.getStatistics(statistic_ids, start_time, period ?? 'day', end_time ?? null)
   );
 
+  tool(server, 'ha_get_services',
+    `Lista todos los servicios disponibles en Home Assistant con sus esquemas de parámetros.
+Es la herramienta más importante para descubrir qué servicios puedes llamar con ha_call_service.
+Filtra por dominio para obtener solo los servicios de luz, clima, media player, etc.`,
+    {
+      domain: z.string().optional().describe('Filtrar por dominio: light, climate, media_player, etc. (opcional, omitir para todos)'),
+    },
+    ({ domain }) => ha.getServices(domain ?? null)
+  );
+
+  tool(server, 'ha_create_scene',
+    `Crea una nueva escena en Home Assistant (modo storage).
+Una escena captura el estado de múltiples entidades y las restaura al activarla.
+
+Ejemplo:
+{
+  "name": "Cine",
+  "entities": {
+    "light.sala": {"state": "on", "brightness": 50},
+    "media_player.tv": {"state": "on"}
+  }
+}`,
+    {
+      config: z.record(z.unknown()).describe('Configuración de la escena con "name" y "entities"'),
+    },
+    ({ config }) => ha.createScene(config)
+  );
+
+  tool(server, 'ha_update_scene',
+    'Actualiza una escena existente. Usa ha_get_entities_by_domain con domain="scene" para obtener IDs.',
+    {
+      scene_id: z.string().describe('ID de la escena (sin el prefijo scene., ej: "cine" para scene.cine)'),
+      config: z.record(z.unknown()).describe('Nueva configuración completa de la escena'),
+    },
+    ({ scene_id, config }) => ha.updateScene(scene_id, config)
+  );
+
+  tool(server, 'ha_delete_scene',
+    'Elimina permanentemente una escena de Home Assistant.',
+    {
+      scene_id: z.string().describe('ID de la escena (sin el prefijo scene.)'),
+    },
+    ({ scene_id }) => ha.deleteScene(scene_id)
+  );
+
+  tool(server, 'ha_create_script',
+    `Crea o actualiza un script en Home Assistant (modo storage).
+Los scripts son secuencias de acciones reutilizables que pueden recibir variables.
+
+Ejemplo:
+{
+  "alias": "Apagar todo",
+  "sequence": [
+    {"service": "light.turn_off", "target": {"entity_id": "all"}},
+    {"service": "media_player.turn_off", "target": {"entity_id": "all"}}
+  ],
+  "mode": "single"
+}`,
+    {
+      script_id: z.string().describe('ID del script (snake_case, ej: "apagar_todo"). Se crea si no existe.'),
+      config: z.record(z.unknown()).describe('Configuración del script con "alias", "sequence" y "mode"'),
+    },
+    ({ script_id, config }) => ha.createOrUpdateScript(script_id, config)
+  );
+
+  tool(server, 'ha_delete_script',
+    'Elimina permanentemente un script de Home Assistant.',
+    {
+      script_id: z.string().describe('ID del script (sin el prefijo script., ej: "apagar_todo")'),
+    },
+    ({ script_id }) => ha.deleteScript(script_id)
+  );
+
+  tool(server, 'ha_get_core_info',
+    'Obtiene información del core de Home Assistant: versión, estado, ubicación, zona horaria y unidades.',
+    {},
+    () => ha.getCoreInfo()
+  );
+
+  tool(server, 'ha_check_config',
+    'Valida la configuración YAML de Home Assistant sin aplicar cambios ni reiniciar. Ideal antes de ha_restart.',
+    {},
+    () => ha.checkConfig()
+  );
+
+  tool(server, 'ha_restart',
+    'Reinicia Home Assistant core. La conectividad se perderá ~30 segundos. Usa ha_check_config antes para validar. Confirma con el usuario.',
+    {},
+    () => ha.restart()
+  );
+
+  tool(server, 'ha_list_integrations',
+    `Lista todas las integraciones instaladas en Home Assistant (config entries).
+Devuelve entry_id, domain, título, estado (loaded/setup_error) y si soporta recarga.
+Usa el entry_id con ha_reload_integration para recargar sin reiniciar.`,
+    {},
+    () => ha.listIntegrations()
+  );
+
+  tool(server, 'ha_reload_integration',
+    'Recarga una integración específica sin reiniciar Home Assistant. No todas las integraciones soportan recarga.',
+    {
+      entry_id: z.string().describe('ID de la config entry (obtenlo con ha_list_integrations)'),
+    },
+    ({ entry_id }) => ha.reloadIntegration(entry_id)
+  );
+
+  tool(server, 'ha_list_addons',
+    `Lista todos los add-ons instalados en Home Assistant con su estado, versión y uso de recursos.
+Solo disponible en Home Assistant OS o instalaciones Supervised. Retorna error en otras instalaciones.`,
+    {},
+    () => ha.listAddons()
+  );
+
+  tool(server, 'ha_get_addon_info',
+    'Obtiene información detallada de un add-on: estado, versión, red, opciones de configuración.',
+    {
+      slug: z.string().describe('Slug del add-on, ej: "core_mosquitto", "a0d7b954_vscode"'),
+    },
+    ({ slug }) => ha.getAddonInfo(slug)
+  );
+
+  tool(server, 'ha_start_addon',
+    'Inicia un add-on detenido. Solo disponible en HA OS o Supervised.',
+    {
+      slug: z.string().describe('Slug del add-on (obtenlo con ha_list_addons)'),
+    },
+    ({ slug }) => ha.startAddon(slug)
+  );
+
+  tool(server, 'ha_stop_addon',
+    'Detiene un add-on en ejecución. Solo disponible en HA OS o Supervised.',
+    {
+      slug: z.string().describe('Slug del add-on (obtenlo con ha_list_addons)'),
+    },
+    ({ slug }) => ha.stopAddon(slug)
+  );
+
+  tool(server, 'ha_restart_addon',
+    'Reinicia un add-on. Solo disponible en HA OS o Supervised.',
+    {
+      slug: z.string().describe('Slug del add-on (obtenlo con ha_list_addons)'),
+    },
+    ({ slug }) => ha.restartAddon(slug)
+  );
+
+  tool(server, 'ha_list_calendars',
+    'Lista todos los calendarios integrados en Home Assistant (Google Calendar, CalDAV, etc.).',
+    {},
+    () => ha.listCalendars()
+  );
+
+  tool(server, 'ha_get_calendar_events',
+    'Obtiene los eventos de un calendario en un rango de fechas.',
+    {
+      calendar_entity_id: z.string().describe('ID de la entidad calendario, ej: "calendar.personal"'),
+      start: z.string().describe('Fecha de inicio en ISO 8601, ej: "2024-12-01T00:00:00.000Z"'),
+      end: z.string().describe('Fecha de fin en ISO 8601, ej: "2024-12-31T23:59:59.000Z"'),
+    },
+    ({ calendar_entity_id, start, end }) => ha.getCalendarEvents(calendar_entity_id, start, end)
+  );
+
+  tool(server, 'ha_trigger_webhook',
+    `Dispara un webhook de Home Assistant por su ID.
+Útil para activar automatizaciones configuradas con el trigger de tipo "webhook".`,
+    {
+      webhook_id: z.string().describe('ID del webhook configurado en la automatización'),
+      data: z.record(z.unknown()).optional().describe('Datos opcionales a pasar al webhook'),
+    },
+    ({ webhook_id, data }) => ha.triggerWebhook(webhook_id, data ?? {})
+  );
+
+  tool(server, 'ha_list_backups',
+    'Lista todos los backups disponibles en Home Assistant con nombre, fecha, tamaño y tipo.',
+    {},
+    () => ha.listBackups()
+  );
+
+  tool(server, 'ha_create_backup',
+    'Crea un backup completo de Home Assistant. La operación es asíncrona y puede tardar varios minutos.',
+    {
+      name: z.string().optional().describe('Nombre descriptivo del backup (opcional)'),
+    },
+    ({ name }) => ha.createBackup(name ?? null)
+  );
+
+  tool(server, 'ha_purge_history',
+    `Purga el historial antiguo del recorder de Home Assistant para liberar espacio en la base de datos.
+Mantiene los últimos N días de historial y elimina el resto.
+repack=true compacta la base de datos SQLite (tarda más pero libera más espacio).`,
+    {
+      keep_days: z.number().int().positive().default(30).describe('Días de historial a conservar (default: 30)'),
+      repack: z.boolean().default(false).describe('Compactar la base de datos después de purgar (default: false)'),
+    },
+    ({ keep_days, repack }) => ha.purgeHistory(keep_days ?? 30, repack ?? false)
+  );
+
+  tool(server, 'ha_list_floors',
+    'Lista los pisos/plantas configurados en Home Assistant (requiere HA 2023.9+).',
+    {},
+    () => ha.listFloors()
+  );
+
+  tool(server, 'ha_list_labels',
+    'Lista las etiquetas configuradas en Home Assistant para organizar entidades y dispositivos (requiere HA 2024.4+).',
+    {},
+    () => ha.listLabels()
+  );
+
+  tool(server, 'ha_handle_intent',
+    `Envía un intent de lenguaje natural a Home Assistant para ejecutar acciones.
+Los intents permiten interactuar con HA de forma conversacional.
+
+Intents built-in comunes:
+- HassTurnOn / HassTurnOff: { "name": "sala" }
+- HassLightSet: { "name": "cocina", "brightness": 50 }
+- HassClimateSetTemperature: { "name": "habitacion", "temperature": 22 }`,
+    {
+      name: z.string().describe('Nombre del intent, ej: "HassTurnOn", "HassTurnOff", "HassLightSet"'),
+      slots: z.record(z.unknown()).optional().describe('Parámetros del intent (slots), ej: {"name": "sala", "brightness": 80}'),
+    },
+    ({ name, slots }) => ha.handleIntent(name, slots ?? {})
+  );
+
   // ── PostgreSQL tools ─────────────────────────────────────────────────────────
 
   tool(server, 'pg_connect',
@@ -1420,7 +1644,7 @@ const app = express();
 app.use(express.json());
 
 const JENKINS_TOOLS = 20;
-const HA_TOOLS = 43;
+const HA_TOOLS = 68;
 const PG_TOOLS = 22;
 const DOCKER_TOOLS = 19;
 const SSH_TOOLS = 12;
