@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import express from 'express';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
 import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import { JenkinsClient } from './tools/jenkins.js';
@@ -649,6 +650,279 @@ Ejemplo: temperatura de los últimos 7 días agrupada por día:
     },
     ({ statistic_ids, start_time, period, end_time }) =>
       ha.getStatistics(statistic_ids, start_time, period ?? 'day', end_time ?? null)
+  );
+
+  tool(server, 'ha_get_services',
+    `Lista todos los servicios disponibles en Home Assistant con sus esquemas de parámetros.
+Es la herramienta más importante para descubrir qué servicios puedes llamar con ha_call_service.
+Filtra por dominio para obtener solo los servicios de luz, clima, media player, etc.`,
+    {
+      domain: z.string().optional().describe('Filtrar por dominio: light, climate, media_player, etc. (opcional, omitir para todos)'),
+    },
+    ({ domain }) => ha.getServices(domain ?? null)
+  );
+
+  tool(server, 'ha_create_scene',
+    `Crea una nueva escena en Home Assistant (modo storage).
+Una escena captura el estado de múltiples entidades y las restaura al activarla.
+
+Ejemplo:
+{
+  "name": "Cine",
+  "entities": {
+    "light.sala": {"state": "on", "brightness": 50},
+    "media_player.tv": {"state": "on"}
+  }
+}`,
+    {
+      config: z.record(z.unknown()).describe('Configuración de la escena con "name" y "entities"'),
+    },
+    ({ config }) => ha.createScene(config)
+  );
+
+  tool(server, 'ha_update_scene',
+    'Actualiza una escena existente. Usa ha_get_entities_by_domain con domain="scene" para obtener IDs.',
+    {
+      scene_id: z.string().describe('ID de la escena (sin el prefijo scene., ej: "cine" para scene.cine)'),
+      config: z.record(z.unknown()).describe('Nueva configuración completa de la escena'),
+    },
+    ({ scene_id, config }) => ha.updateScene(scene_id, config)
+  );
+
+  tool(server, 'ha_delete_scene',
+    'Elimina permanentemente una escena de Home Assistant.',
+    {
+      scene_id: z.string().describe('ID de la escena (sin el prefijo scene.)'),
+    },
+    ({ scene_id }) => ha.deleteScene(scene_id)
+  );
+
+  tool(server, 'ha_create_script',
+    `Crea o actualiza un script en Home Assistant (modo storage).
+Los scripts son secuencias de acciones reutilizables que pueden recibir variables.
+
+Ejemplo:
+{
+  "alias": "Apagar todo",
+  "sequence": [
+    {"service": "light.turn_off", "target": {"entity_id": "all"}},
+    {"service": "media_player.turn_off", "target": {"entity_id": "all"}}
+  ],
+  "mode": "single"
+}`,
+    {
+      script_id: z.string().describe('ID del script (snake_case, ej: "apagar_todo"). Se crea si no existe.'),
+      config: z.record(z.unknown()).describe('Configuración del script con "alias", "sequence" y "mode"'),
+    },
+    ({ script_id, config }) => ha.createOrUpdateScript(script_id, config)
+  );
+
+  tool(server, 'ha_delete_script',
+    'Elimina permanentemente un script de Home Assistant.',
+    {
+      script_id: z.string().describe('ID del script (sin el prefijo script., ej: "apagar_todo")'),
+    },
+    ({ script_id }) => ha.deleteScript(script_id)
+  );
+
+  tool(server, 'ha_get_core_info',
+    'Obtiene información del core de Home Assistant: versión, estado, ubicación, zona horaria y unidades.',
+    {},
+    () => ha.getCoreInfo()
+  );
+
+  tool(server, 'ha_check_config',
+    'Valida la configuración YAML de Home Assistant sin aplicar cambios ni reiniciar. Ideal antes de ha_restart.',
+    {},
+    () => ha.checkConfig()
+  );
+
+  tool(server, 'ha_restart',
+    'Reinicia Home Assistant core. La conectividad se perderá ~30 segundos. Usa ha_check_config antes para validar. Confirma con el usuario.',
+    {},
+    () => ha.restart()
+  );
+
+  tool(server, 'ha_list_integrations',
+    `Lista todas las integraciones instaladas en Home Assistant (config entries).
+Devuelve entry_id, domain, título, estado (loaded/setup_error) y si soporta recarga.
+Usa el entry_id con ha_reload_integration para recargar sin reiniciar.`,
+    {},
+    () => ha.listIntegrations()
+  );
+
+  tool(server, 'ha_reload_integration',
+    'Recarga una integración específica sin reiniciar Home Assistant. No todas las integraciones soportan recarga.',
+    {
+      entry_id: z.string().describe('ID de la config entry (obtenlo con ha_list_integrations)'),
+    },
+    ({ entry_id }) => ha.reloadIntegration(entry_id)
+  );
+
+  tool(server, 'ha_list_addons',
+    `Lista todos los add-ons instalados en Home Assistant con su estado, versión y uso de recursos.
+Solo disponible en Home Assistant OS o instalaciones Supervised. Retorna error en otras instalaciones.`,
+    {},
+    () => ha.listAddons()
+  );
+
+  tool(server, 'ha_get_addon_info',
+    'Obtiene información detallada de un add-on: estado, versión, red, opciones de configuración.',
+    {
+      slug: z.string().describe('Slug del add-on, ej: "core_mosquitto", "a0d7b954_vscode"'),
+    },
+    ({ slug }) => ha.getAddonInfo(slug)
+  );
+
+  tool(server, 'ha_start_addon',
+    'Inicia un add-on detenido. Solo disponible en HA OS o Supervised.',
+    {
+      slug: z.string().describe('Slug del add-on (obtenlo con ha_list_addons)'),
+    },
+    ({ slug }) => ha.startAddon(slug)
+  );
+
+  tool(server, 'ha_stop_addon',
+    'Detiene un add-on en ejecución. Solo disponible en HA OS o Supervised.',
+    {
+      slug: z.string().describe('Slug del add-on (obtenlo con ha_list_addons)'),
+    },
+    ({ slug }) => ha.stopAddon(slug)
+  );
+
+  tool(server, 'ha_restart_addon',
+    'Reinicia un add-on. Solo disponible en HA OS o Supervised.',
+    {
+      slug: z.string().describe('Slug del add-on (obtenlo con ha_list_addons)'),
+    },
+    ({ slug }) => ha.restartAddon(slug)
+  );
+
+  tool(server, 'ha_list_calendars',
+    'Lista todos los calendarios integrados en Home Assistant (Google Calendar, CalDAV, etc.).',
+    {},
+    () => ha.listCalendars()
+  );
+
+  tool(server, 'ha_get_calendar_events',
+    'Obtiene los eventos de un calendario en un rango de fechas.',
+    {
+      calendar_entity_id: z.string().describe('ID de la entidad calendario, ej: "calendar.personal"'),
+      start: z.string().describe('Fecha de inicio en ISO 8601, ej: "2024-12-01T00:00:00.000Z"'),
+      end: z.string().describe('Fecha de fin en ISO 8601, ej: "2024-12-31T23:59:59.000Z"'),
+    },
+    ({ calendar_entity_id, start, end }) => ha.getCalendarEvents(calendar_entity_id, start, end)
+  );
+
+  tool(server, 'ha_trigger_webhook',
+    `Dispara un webhook de Home Assistant por su ID.
+Útil para activar automatizaciones configuradas con el trigger de tipo "webhook".`,
+    {
+      webhook_id: z.string().describe('ID del webhook configurado en la automatización'),
+      data: z.record(z.unknown()).optional().describe('Datos opcionales a pasar al webhook'),
+    },
+    ({ webhook_id, data }) => ha.triggerWebhook(webhook_id, data ?? {})
+  );
+
+  tool(server, 'ha_list_backups',
+    'Lista todos los backups disponibles en Home Assistant con nombre, fecha, tamaño y tipo.',
+    {},
+    () => ha.listBackups()
+  );
+
+  tool(server, 'ha_create_backup',
+    'Crea un backup completo de Home Assistant. La operación es asíncrona y puede tardar varios minutos.',
+    {
+      name: z.string().optional().describe('Nombre descriptivo del backup (opcional)'),
+    },
+    ({ name }) => ha.createBackup(name ?? null)
+  );
+
+  tool(server, 'ha_create_partial_backup',
+    `Crea un backup parcial seleccionando exactamente qué incluir.
+Más rápido que un backup completo cuando solo necesitas guardar partes específicas.
+
+Carpetas válidas (folders): "ssl", "share", "addons/local", "media"
+
+Ejemplo — solo configuración de HA y add-ons específicos:
+{
+  "name": "backup-config",
+  "homeassistant": true,
+  "addons": ["core_mosquitto", "a0d7b954_vscode"],
+  "folders": ["ssl"]
+}`,
+    {
+      name: z.string().optional().describe('Nombre descriptivo del backup'),
+      homeassistant: z.boolean().default(true).describe('Incluir configuración de Home Assistant (default: true)'),
+      addons: z.array(z.string()).optional().describe('Lista de slugs de add-ons a incluir, ej: ["core_mosquitto"]'),
+      folders: z.array(z.string()).optional().describe('Carpetas a incluir: "ssl", "share", "addons/local", "media"'),
+      password: z.string().optional().describe('Contraseña para cifrar el backup (opcional)'),
+    },
+    ({ name, homeassistant, addons, folders, password }) => {
+      const config = { homeassistant: homeassistant ?? true };
+      if (name) config.name = name;
+      if (addons?.length) config.addons = addons;
+      if (folders?.length) config.folders = folders;
+      if (password) config.password = password;
+      return ha.createPartialBackup(config);
+    }
+  );
+
+  tool(server, 'ha_restore_backup',
+    `Restaura un backup completo de Home Assistant por su slug.
+Usa ha_list_backups para obtener el slug del backup que quieres restaurar.
+ADVERTENCIA: Esta operación reinicia Home Assistant. La conectividad se perderá varios minutos. Confirma con el usuario.`,
+    {
+      slug: z.string().describe('Slug del backup a restaurar (obtenlo con ha_list_backups)'),
+      password: z.string().optional().describe('Contraseña del backup si fue cifrado'),
+    },
+    ({ slug, password }) => ha.restoreBackup(slug, password ?? null)
+  );
+
+  tool(server, 'ha_get_error_log',
+    `Obtiene el log de errores de Home Assistant (texto plano).
+Útil para diagnosticar problemas con integraciones, entidades o el sistema.
+El log contiene entradas de nivel WARNING y ERROR del proceso de HA.`,
+    {},
+    () => ha.getErrorLog()
+  );
+
+  tool(server, 'ha_purge_history',
+    `Purga el historial antiguo del recorder de Home Assistant para liberar espacio en la base de datos.
+Mantiene los últimos N días de historial y elimina el resto.
+repack=true compacta la base de datos SQLite (tarda más pero libera más espacio).`,
+    {
+      keep_days: z.number().int().positive().default(30).describe('Días de historial a conservar (default: 30)'),
+      repack: z.boolean().default(false).describe('Compactar la base de datos después de purgar (default: false)'),
+    },
+    ({ keep_days, repack }) => ha.purgeHistory(keep_days ?? 30, repack ?? false)
+  );
+
+  tool(server, 'ha_list_floors',
+    'Lista los pisos/plantas configurados en Home Assistant (requiere HA 2023.9+).',
+    {},
+    () => ha.listFloors()
+  );
+
+  tool(server, 'ha_list_labels',
+    'Lista las etiquetas configuradas en Home Assistant para organizar entidades y dispositivos (requiere HA 2024.4+).',
+    {},
+    () => ha.listLabels()
+  );
+
+  tool(server, 'ha_handle_intent',
+    `Envía un intent de lenguaje natural a Home Assistant para ejecutar acciones.
+Los intents permiten interactuar con HA de forma conversacional.
+
+Intents built-in comunes:
+- HassTurnOn / HassTurnOff: { "name": "sala" }
+- HassLightSet: { "name": "cocina", "brightness": 50 }
+- HassClimateSetTemperature: { "name": "habitacion", "temperature": 22 }`,
+    {
+      name: z.string().describe('Nombre del intent, ej: "HassTurnOn", "HassTurnOff", "HassLightSet"'),
+      slots: z.record(z.unknown()).optional().describe('Parámetros del intent (slots), ej: {"name": "sala", "brightness": 80}'),
+    },
+    ({ name, slots }) => ha.handleIntent(name, slots ?? {})
   );
 
   // ── PostgreSQL tools ─────────────────────────────────────────────────────────
@@ -1412,15 +1686,25 @@ Necesario antes de usar el resto de herramientas del router.`,
 
 // ─── Sesiones stateful ────────────────────────────────────────────────────────
 
-const transports = new Map(); // sessionId → { transport, server }
+const transports = new Map();    // StreamableHTTP: sessionId → { transport, server }
+const sseTransports = new Map(); // SSE:            sessionId → { transport, server }
 
 // ─── Express app ──────────────────────────────────────────────────────────────
 
 const app = express();
 app.use(express.json());
 
+// CORS — requerido para clientes de navegador como Open WebUI
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, mcp-session-id');
+  if (req.method === 'OPTIONS') return res.sendStatus(200);
+  next();
+});
+
 const JENKINS_TOOLS = 20;
-const HA_TOOLS = 43;
+const HA_TOOLS = 71;
 const PG_TOOLS = 22;
 const DOCKER_TOOLS = 19;
 const SSH_TOOLS = 12;
@@ -1431,8 +1715,10 @@ app.get('/', (_req, res) => {
   res.json({
     name: 'mcp-local-network-admin',
     version: '2.0.0',
-    transport: 'StreamableHTTP',
-    endpoint: '/mcp',
+    transports: {
+      streamableHttp: '/mcp',
+      sse: '/sse',
+    },
     tools: {
       jenkins: JENKINS_TOOLS,
       homeassistant: HA_TOOLS,
@@ -1497,6 +1783,25 @@ app.delete('/mcp', async (req, res) => {
   await entry.transport.handleRequest(req, res);
 });
 
+// ─── SSE transport (Open WebUI y clientes MCP legacy) ─────────────────────────
+
+// GET /sse — el cliente abre esta conexión SSE y recibe la URL del endpoint
+app.get('/sse', async (req, res) => {
+  const server = createServer();
+  const transport = new SSEServerTransport('/messages', res);
+  sseTransports.set(transport.sessionId, { transport, server });
+  transport.onclose = () => sseTransports.delete(transport.sessionId);
+  await server.connect(transport);
+});
+
+// POST /messages — el cliente envía todos los mensajes JSON-RPC aquí
+app.post('/messages', async (req, res) => {
+  const { sessionId } = req.query;
+  const entry = sseTransports.get(sessionId);
+  if (!entry) return res.status(404).json({ error: 'SSE session not found' });
+  await entry.transport.handlePostMessage(req, res, req.body);
+});
+
 // ─── Start ────────────────────────────────────────────────────────────────────
 
 const PORT = process.env.PORT || 3000;
@@ -1504,18 +1809,22 @@ const HOST = '0.0.0.0';
 
 app.listen(PORT, HOST, () => {
   console.log(`\n✅ MCP Local Network Admin v2.0.0`);
-  console.log(`   Endpoint MCP:   http://localhost:${PORT}/mcp`);
-  console.log(`   Health check:   http://localhost:${PORT}/`);
-  console.log(`   Tools:          ${JENKINS_TOOLS} Jenkins + ${HA_TOOLS} HA + ${PG_TOOLS} PG + ${DOCKER_TOOLS} Docker + ${SSH_TOOLS} SSH + ${ROUTER_TOOLS} Router = ${TOTAL_TOOLS} total`);
+  console.log(`   Claude Code (StreamableHTTP): http://localhost:${PORT}/mcp`);
+  console.log(`   Open WebUI (SSE):             http://localhost:${PORT}/sse`);
+  console.log(`   Health check:                 http://localhost:${PORT}/`);
+  console.log(`   Tools: ${JENKINS_TOOLS} Jenkins + ${HA_TOOLS} HA + ${PG_TOOLS} PG + ${DOCKER_TOOLS} Docker + ${SSH_TOOLS} SSH + ${ROUTER_TOOLS} Router = ${TOTAL_TOOLS} total`);
   console.log(`   Jenkins:        ${process.env.JENKINS_URL || '⚠️  no configurado (JENKINS_URL)'}`);
   console.log(`   Home Assistant: ${process.env.HA_URL || '⚠️  no configurado (HA_URL)'}`);
   console.log(`   Router:         ${process.env.ASUS_ROUTER_URL || '⚠️  no configurado (ASUS_ROUTER_URL)'}\n`);
-  console.log(`   Agregar a Claude Code:`);
-  console.log(`   claude mcp add --transport http local-network-admin http://localhost:${PORT}/mcp\n`);
+  console.log(`   Claude Code:  claude mcp add --transport http local-network-admin http://localhost:${PORT}/mcp`);
+  console.log(`   Open WebUI:   Settings → Tools → add http://<host>:${PORT}/sse\n`);
 });
 
 process.on('SIGINT', async () => {
   for (const { transport } of transports.values()) {
+    await transport.close().catch(() => {});
+  }
+  for (const { transport } of sseTransports.values()) {
     await transport.close().catch(() => {});
   }
   process.exit(0);
