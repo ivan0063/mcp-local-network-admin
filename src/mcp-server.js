@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import express from 'express';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
 import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import { JenkinsClient } from './tools/jenkins.js';
@@ -1685,12 +1686,22 @@ Necesario antes de usar el resto de herramientas del router.`,
 
 // ─── Sesiones stateful ────────────────────────────────────────────────────────
 
-const transports = new Map(); // sessionId → { transport, server }
+const transports = new Map();    // StreamableHTTP: sessionId → { transport, server }
+const sseTransports = new Map(); // SSE:            sessionId → { transport, server }
 
 // ─── Express app ──────────────────────────────────────────────────────────────
 
 const app = express();
 app.use(express.json());
+
+// CORS — requerido para clientes de navegador como Open WebUI
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, mcp-session-id');
+  if (req.method === 'OPTIONS') return res.sendStatus(200);
+  next();
+});
 
 const JENKINS_TOOLS = 20;
 const HA_TOOLS = 71;
@@ -1704,8 +1715,10 @@ app.get('/', (_req, res) => {
   res.json({
     name: 'mcp-local-network-admin',
     version: '2.0.0',
-    transport: 'StreamableHTTP',
-    endpoint: '/mcp',
+    transports: {
+      streamableHttp: '/mcp',
+      sse: '/sse',
+    },
     tools: {
       jenkins: JENKINS_TOOLS,
       homeassistant: HA_TOOLS,
@@ -1770,6 +1783,25 @@ app.delete('/mcp', async (req, res) => {
   await entry.transport.handleRequest(req, res);
 });
 
+// ─── SSE transport (Open WebUI y clientes MCP legacy) ─────────────────────────
+
+// GET /sse — el cliente abre esta conexión SSE y recibe la URL del endpoint
+app.get('/sse', async (req, res) => {
+  const server = createServer();
+  const transport = new SSEServerTransport('/messages', res);
+  sseTransports.set(transport.sessionId, { transport, server });
+  transport.onclose = () => sseTransports.delete(transport.sessionId);
+  await server.connect(transport);
+});
+
+// POST /messages — el cliente envía todos los mensajes JSON-RPC aquí
+app.post('/messages', async (req, res) => {
+  const { sessionId } = req.query;
+  const entry = sseTransports.get(sessionId);
+  if (!entry) return res.status(404).json({ error: 'SSE session not found' });
+  await entry.transport.handlePostMessage(req, res, req.body);
+});
+
 // ─── Start ────────────────────────────────────────────────────────────────────
 
 const PORT = process.env.PORT || 3000;
@@ -1777,18 +1809,22 @@ const HOST = '0.0.0.0';
 
 app.listen(PORT, HOST, () => {
   console.log(`\n✅ MCP Local Network Admin v2.0.0`);
-  console.log(`   Endpoint MCP:   http://localhost:${PORT}/mcp`);
-  console.log(`   Health check:   http://localhost:${PORT}/`);
-  console.log(`   Tools:          ${JENKINS_TOOLS} Jenkins + ${HA_TOOLS} HA + ${PG_TOOLS} PG + ${DOCKER_TOOLS} Docker + ${SSH_TOOLS} SSH + ${ROUTER_TOOLS} Router = ${TOTAL_TOOLS} total`);
+  console.log(`   Claude Code (StreamableHTTP): http://localhost:${PORT}/mcp`);
+  console.log(`   Open WebUI (SSE):             http://localhost:${PORT}/sse`);
+  console.log(`   Health check:                 http://localhost:${PORT}/`);
+  console.log(`   Tools: ${JENKINS_TOOLS} Jenkins + ${HA_TOOLS} HA + ${PG_TOOLS} PG + ${DOCKER_TOOLS} Docker + ${SSH_TOOLS} SSH + ${ROUTER_TOOLS} Router = ${TOTAL_TOOLS} total`);
   console.log(`   Jenkins:        ${process.env.JENKINS_URL || '⚠️  no configurado (JENKINS_URL)'}`);
   console.log(`   Home Assistant: ${process.env.HA_URL || '⚠️  no configurado (HA_URL)'}`);
   console.log(`   Router:         ${process.env.ASUS_ROUTER_URL || '⚠️  no configurado (ASUS_ROUTER_URL)'}\n`);
-  console.log(`   Agregar a Claude Code:`);
-  console.log(`   claude mcp add --transport http local-network-admin http://localhost:${PORT}/mcp\n`);
+  console.log(`   Claude Code:  claude mcp add --transport http local-network-admin http://localhost:${PORT}/mcp`);
+  console.log(`   Open WebUI:   Settings → Tools → add http://<host>:${PORT}/sse\n`);
 });
 
 process.on('SIGINT', async () => {
   for (const { transport } of transports.values()) {
+    await transport.close().catch(() => {});
+  }
+  for (const { transport } of sseTransports.values()) {
     await transport.close().catch(() => {});
   }
   process.exit(0);
