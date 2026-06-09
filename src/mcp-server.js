@@ -837,6 +837,55 @@ Solo disponible en Home Assistant OS o instalaciones Supervised. Retorna error e
     ({ name }) => ha.createBackup(name ?? null)
   );
 
+  tool(server, 'ha_create_partial_backup',
+    `Crea un backup parcial seleccionando exactamente qué incluir.
+Más rápido que un backup completo cuando solo necesitas guardar partes específicas.
+
+Carpetas válidas (folders): "ssl", "share", "addons/local", "media"
+
+Ejemplo — solo configuración de HA y add-ons específicos:
+{
+  "name": "backup-config",
+  "homeassistant": true,
+  "addons": ["core_mosquitto", "a0d7b954_vscode"],
+  "folders": ["ssl"]
+}`,
+    {
+      name: z.string().optional().describe('Nombre descriptivo del backup'),
+      homeassistant: z.boolean().default(true).describe('Incluir configuración de Home Assistant (default: true)'),
+      addons: z.array(z.string()).optional().describe('Lista de slugs de add-ons a incluir, ej: ["core_mosquitto"]'),
+      folders: z.array(z.string()).optional().describe('Carpetas a incluir: "ssl", "share", "addons/local", "media"'),
+      password: z.string().optional().describe('Contraseña para cifrar el backup (opcional)'),
+    },
+    ({ name, homeassistant, addons, folders, password }) => {
+      const config = { homeassistant: homeassistant ?? true };
+      if (name) config.name = name;
+      if (addons?.length) config.addons = addons;
+      if (folders?.length) config.folders = folders;
+      if (password) config.password = password;
+      return ha.createPartialBackup(config);
+    }
+  );
+
+  tool(server, 'ha_restore_backup',
+    `Restaura un backup completo de Home Assistant por su slug.
+Usa ha_list_backups para obtener el slug del backup que quieres restaurar.
+ADVERTENCIA: Esta operación reinicia Home Assistant. La conectividad se perderá varios minutos. Confirma con el usuario.`,
+    {
+      slug: z.string().describe('Slug del backup a restaurar (obtenlo con ha_list_backups)'),
+      password: z.string().optional().describe('Contraseña del backup si fue cifrado'),
+    },
+    ({ slug, password }) => ha.restoreBackup(slug, password ?? null)
+  );
+
+  tool(server, 'ha_get_error_log',
+    `Obtiene el log de errores de Home Assistant (texto plano).
+Útil para diagnosticar problemas con integraciones, entidades o el sistema.
+El log contiene entradas de nivel WARNING y ERROR del proceso de HA.`,
+    {},
+    () => ha.getErrorLog()
+  );
+
   tool(server, 'ha_purge_history',
     `Purga el historial antiguo del recorder de Home Assistant para liberar espacio en la base de datos.
 Mantiene los últimos N días de historial y elimina el resto.
@@ -1644,7 +1693,7 @@ const app = express();
 app.use(express.json());
 
 const JENKINS_TOOLS = 20;
-const HA_TOOLS = 68;
+const HA_TOOLS = 71;
 const PG_TOOLS = 22;
 const DOCKER_TOOLS = 19;
 const SSH_TOOLS = 12;

@@ -735,6 +735,44 @@ export class HomeAssistantClient {
     });
     return res.json();
   }
+
+  // ─── Error log ────────────────────────────────────────────────
+
+  /** Obtiene el log de errores de Home Assistant (texto plano) */
+  async getErrorLog() {
+    const res = await this.request('/error_log');
+    return res.text();
+  }
+
+  // ─── Backups (restore y parcial) ──────────────────────────────
+
+  /**
+   * Crea un backup parcial seleccionando qué incluir.
+   * config: { name, homeassistant, addons, folders, password }
+   * folders válidos: 'ssl', 'share', 'addons/local', 'media'
+   */
+  async createPartialBackup(config) {
+    const res = await this.request('/backup/partial', {
+      method: 'POST',
+      body: JSON.stringify(config),
+    });
+    const data = await res.json();
+    return data?.data ?? data;
+  }
+
+  /**
+   * Restaura un backup completo por su slug.
+   * Obtén el slug con listBackups(). La operación reinicia HA.
+   */
+  async restoreBackup(slug, password = null) {
+    const body = password ? { password } : {};
+    const res = await this.request(`/backup/${slug}/restore/full`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    return data?.data ?? data;
+  }
 }
 
 // ─── Helpers para generar configs Lovelace ───────────────────────────────────
