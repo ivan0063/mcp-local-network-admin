@@ -414,7 +414,7 @@ export class HomeAssistantClient {
    * si está deshabilitada, plataforma de origen, etc.
    */
   async listEntityRegistry(domain = null) {
-    const res = await this.request('/config/entity_registry/list');
+    const res = await this.request('/config/entity_registry');
     const all = await res.json();
     if (!domain) return all;
     return all.filter(e => e.entity_id.startsWith(`${domain}.`));
@@ -446,7 +446,7 @@ export class HomeAssistantClient {
 
   /** Lista el registro de dispositivos (grupos de entidades por dispositivo físico) */
   async listDeviceRegistry() {
-    const res = await this.request('/config/device_registry/list');
+    const res = await this.request('/config/device_registry');
     return res.json();
   }
 

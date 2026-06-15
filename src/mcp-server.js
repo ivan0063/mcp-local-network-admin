@@ -843,31 +843,27 @@ Solo disponible en Home Assistant OS o instalaciones Supervised. Retorna error e
   tool(server, 'ha_create_partial_backup',
     `Crea un backup parcial seleccionando exactamente qué incluir.
 Más rápido que un backup completo cuando solo necesitas guardar partes específicas.
+Nota: en instalaciones Container no hay add-ons — solo configuración y carpetas.
 
-Carpetas válidas (folders): "ssl", "share", "addons/local", "media"
+Carpetas válidas: "ssl", "share", "media"
 
-Ejemplo — solo configuración de HA y add-ons específicos:
+Ejemplo:
 {
   "name": "backup-config",
-  "homeassistant": true,
-  "addons": ["core_mosquitto", "a0d7b954_vscode"],
-  "folders": ["ssl"]
+  "include_homeassistant": true,
+  "include_folders": ["ssl"]
 }`,
     {
       name: z.string().optional().describe('Nombre descriptivo del backup'),
-      homeassistant: z.boolean().default(true).describe('Incluir configuración de Home Assistant (default: true)'),
-      addons: z.array(z.string()).optional().describe('Lista de slugs de add-ons a incluir, ej: ["core_mosquitto"]'),
-      folders: z.array(z.string()).optional().describe('Carpetas a incluir: "ssl", "share", "addons/local", "media"'),
-      password: z.string().optional().describe('Contraseña para cifrar el backup (opcional)'),
+      include_homeassistant: z.boolean().default(true).describe('Incluir configuración de Home Assistant (default: true)'),
+      include_folders: z.array(z.string()).optional().describe('Carpetas a incluir: "ssl", "share", "media"'),
     },
-    ({ name, homeassistant, addons, folders, password }) => {
-      const config = { homeassistant: homeassistant ?? true };
-      if (name) config.name = name;
-      if (addons?.length) config.addons = addons;
-      if (folders?.length) config.folders = folders;
-      if (password) config.password = password;
-      return ha.createPartialBackup(config);
-    }
+    ({ name, include_homeassistant, include_folders }) =>
+      ha.createPartialBackup({
+        name,
+        include_homeassistant: include_homeassistant ?? true,
+        include_folders: include_folders ?? [],
+      })
   );
 
   tool(server, 'ha_restore_backup',
