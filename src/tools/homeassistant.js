@@ -410,12 +410,28 @@ export class HomeAssistantClient {
   // ─── Entity Registry ──────────────────────────────────────────
 
   /**
-   * Lista el registro de entidades con metadata: área asignada, nombre override,
-   * si está deshabilitada, plataforma de origen, etc.
+   * Lista entidades con metadata del registro. Intenta el endpoint REST no documentado
+   * y cae en fallback sobre /states si no está disponible.
    */
   async listEntityRegistry(domain = null) {
-    const res = await this.request('/config/entity_registry');
-    const all = await res.json();
+    let all;
+    try {
+      const res = await this.request('/config/entity_registry');
+      all = await res.json();
+    } catch {
+      // GET /api/config/entity_registry is undocumented and removed in newer HA versions.
+      // Fall back to /states which has entity_id, state, and attributes.
+      const res = await this.request('/states');
+      const states = await res.json();
+      all = states.map(s => ({
+        entity_id: s.entity_id,
+        name: s.attributes?.friendly_name ?? null,
+        state: s.state,
+        platform: s.entity_id.split('.')[0],
+        area_id: s.attributes?.area_id ?? null,
+        disabled_by: null,
+      }));
+    }
     if (!domain) return all;
     return all.filter(e => e.entity_id.startsWith(`${domain}.`));
   }
@@ -444,10 +460,19 @@ export class HomeAssistantClient {
     return res.json();
   }
 
-  /** Lista el registro de dispositivos (grupos de entidades por dispositivo físico) */
+  /** Lista el registro de dispositivos. Fallback a info básica de estados si no disponible. */
   async listDeviceRegistry() {
-    const res = await this.request('/config/device_registry');
-    return res.json();
+    try {
+      const res = await this.request('/config/device_registry');
+      return res.json();
+    } catch {
+      // GET /api/config/device_registry is undocumented in newer HA versions.
+      // Return a clear message instead of a cryptic 404.
+      throw new Error(
+        'Device registry list is not available via REST API in this Home Assistant version. ' +
+        'Use ha_list_entity_registry to see entities and their metadata instead.'
+      );
+    }
   }
 
   // ─── Helpers ──────────────────────────────────────────────────
