@@ -170,7 +170,7 @@ export class HomeAssistantClient {
    */
   async getAreaRegistry() {
     try {
-      const res = await this.request('/config/area_registry/list');
+      const res = await this.request('/config/area_registry');
       return res.json();
     } catch {
       return this.getAreasFromEntities();
@@ -723,14 +723,28 @@ export class HomeAssistantClient {
 
   /** Lista los pisos/plantas configurados (HA 2023.9+) */
   async listFloors() {
-    const res = await this.request('/config/floor_registry/list');
-    return res.json();
+    try {
+      const res = await this.request('/config/floor_registry');
+      return res.json();
+    } catch {
+      throw new Error(
+        'Floor registry is not available via REST API in this Home Assistant version. ' +
+        'Use the Home Assistant UI or WebSocket API to manage floors.'
+      );
+    }
   }
 
   /** Lista las etiquetas configuradas (HA 2024.4+) */
   async listLabels() {
-    const res = await this.request('/config/label_registry/list');
-    return res.json();
+    try {
+      const res = await this.request('/config/label_registry');
+      return res.json();
+    } catch {
+      throw new Error(
+        'Label registry is not available via REST API in this Home Assistant version. ' +
+        'Use the Home Assistant UI or WebSocket API to manage labels.'
+      );
+    }
   }
 
   // ─── Intent ───────────────────────────────────────────────────
