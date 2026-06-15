@@ -170,7 +170,7 @@ export class HomeAssistantClient {
    */
   async getAreaRegistry() {
     try {
-      const res = await this.request('/config/area_registry/list');
+      const res = await this.request('/config/area_registry');
       return res.json();
     } catch {
       return this.getAreasFromEntities();
@@ -618,36 +618,38 @@ export class HomeAssistantClient {
 
   // ─── Add-ons (solo HA OS / Supervised) ───────────────────────
 
+  /** @throws {Error} Always — add-ons require Supervisor (HA OS or Supervised). Not available on Container. */
+  _requireSupervisor(operation) {
+    throw new Error(
+      `${operation} requires the Home Assistant Supervisor, which is only available on ` +
+      `Home Assistant OS or Supervised installations. ` +
+      `Your installation (Container) does not have Supervisor support.`
+    );
+  }
+
   /** Lista todos los add-ons instalados. Solo disponible en Home Assistant OS o Supervised. */
   async listAddons() {
-    const res = await this.request('/hassio/addons');
-    const data = await res.json();
-    return data?.data?.addons ?? data;
+    this._requireSupervisor('Add-on management');
   }
 
   /** Obtiene info detallada de un add-on */
-  async getAddonInfo(slug) {
-    const res = await this.request(`/hassio/addons/${slug}/info`);
-    const data = await res.json();
-    return data?.data ?? data;
+  async getAddonInfo(_slug) {
+    this._requireSupervisor('Add-on management');
   }
 
   /** Inicia un add-on */
-  async startAddon(slug) {
-    const res = await this.request(`/hassio/addons/${slug}/start`, { method: 'POST' });
-    return res.json();
+  async startAddon(_slug) {
+    this._requireSupervisor('Add-on management');
   }
 
   /** Detiene un add-on */
-  async stopAddon(slug) {
-    const res = await this.request(`/hassio/addons/${slug}/stop`, { method: 'POST' });
-    return res.json();
+  async stopAddon(_slug) {
+    this._requireSupervisor('Add-on management');
   }
 
   /** Reinicia un add-on */
-  async restartAddon(slug) {
-    const res = await this.request(`/hassio/addons/${slug}/restart`, { method: 'POST' });
-    return res.json();
+  async restartAddon(_slug) {
+    this._requireSupervisor('Add-on management');
   }
 
   // ─── Calendarios ──────────────────────────────────────────────
@@ -680,24 +682,30 @@ export class HomeAssistantClient {
     try { return JSON.parse(text); } catch { return { result: text }; }
   }
 
-  // ─── Backups ──────────────────────────────────────────────────
+  // ─── Backups (HA 2024.11+ API) ────────────────────────────────
 
   /** Lista todos los backups disponibles */
   async listBackups() {
-    const res = await this.request('/backup/info');
+    const res = await this.request('/backup');
     const data = await res.json();
-    return data?.data ?? data;
+    return data?.backups ?? data;
   }
 
   /** Crea un backup completo. Operación asíncrona — puede tardar varios minutos. */
   async createBackup(name = null) {
-    const body = name ? { name } : {};
-    const res = await this.request('/backup/full', {
+    const body = {
+      agent_ids: ['backup.local'],
+      include_homeassistant: true,
+      include_all_addons: false,
+      include_folders: [],
+    };
+    if (name) body.name = name;
+    const res = await this.request('/backup/generate', {
       method: 'POST',
       body: JSON.stringify(body),
     });
     const data = await res.json();
-    return data?.data ?? data;
+    return data?.backup_job_id ? data : (data?.data ?? data);
   }
 
   // ─── Recorder ─────────────────────────────────────────────────
@@ -715,14 +723,28 @@ export class HomeAssistantClient {
 
   /** Lista los pisos/plantas configurados (HA 2023.9+) */
   async listFloors() {
-    const res = await this.request('/config/floor_registry/list');
-    return res.json();
+    try {
+      const res = await this.request('/config/floor_registry');
+      return res.json();
+    } catch {
+      throw new Error(
+        'Floor registry is not available via REST API in this Home Assistant version. ' +
+        'Use the Home Assistant UI or WebSocket API to manage floors.'
+      );
+    }
   }
 
   /** Lista las etiquetas configuradas (HA 2024.4+) */
   async listLabels() {
-    const res = await this.request('/config/label_registry/list');
-    return res.json();
+    try {
+      const res = await this.request('/config/label_registry');
+      return res.json();
+    } catch {
+      throw new Error(
+        'Label registry is not available via REST API in this Home Assistant version. ' +
+        'Use the Home Assistant UI or WebSocket API to manage labels.'
+      );
+    }
   }
 
   // ─── Intent ───────────────────────────────────────────────────
@@ -748,16 +770,23 @@ export class HomeAssistantClient {
 
   /**
    * Crea un backup parcial seleccionando qué incluir.
-   * config: { name, homeassistant, addons, folders, password }
+   * config: { name, include_homeassistant, include_all_addons, include_folders, agent_ids }
    * folders válidos: 'ssl', 'share', 'addons/local', 'media'
    */
   async createPartialBackup(config) {
-    const res = await this.request('/backup/partial', {
+    const body = {
+      agent_ids: config.agent_ids ?? ['backup.local'],
+      include_homeassistant: config.include_homeassistant ?? true,
+      include_all_addons: config.include_all_addons ?? false,
+      include_folders: config.include_folders ?? [],
+    };
+    if (config.name) body.name = config.name;
+    const res = await this.request('/backup/generate', {
       method: 'POST',
-      body: JSON.stringify(config),
+      body: JSON.stringify(body),
     });
     const data = await res.json();
-    return data?.data ?? data;
+    return data?.backup_job_id ? data : (data?.data ?? data);
   }
 
   /**
@@ -765,8 +794,9 @@ export class HomeAssistantClient {
    * Obtén el slug con listBackups(). La operación reinicia HA.
    */
   async restoreBackup(slug, password = null) {
-    const body = password ? { password } : {};
-    const res = await this.request(`/backup/${slug}/restore/full`, {
+    const body = { agent_id: 'backup.local' };
+    if (password) body.password = password;
+    const res = await this.request(`/backup/${slug}/restore`, {
       method: 'POST',
       body: JSON.stringify(body),
     });
