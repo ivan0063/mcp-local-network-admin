@@ -1,14 +1,20 @@
+import { HomeAssistantWebSocketClient } from './homeassistant-ws.js';
+
 /**
  * Home Assistant Client
- * Interactúa con la API REST de Home Assistant.
+ * Interactúa con la API REST de Home Assistant para estados/servicios/historial,
+ * y con la API WebSocket para todo lo que ya no existe como endpoint REST en
+ * versiones modernas de HA (registries, lovelace, recorder, backups, helpers).
  * Requiere: HA_URL, HA_TOKEN en .env
  *
  * Documentación: https://developers.home-assistant.io/docs/api/rest/
+ *                https://developers.home-assistant.io/docs/api/websocket/
  */
 export class HomeAssistantClient {
   constructor() {
     this.baseUrl = (process.env.HA_URL || '').replace(/\/$/, '');
     this.token = process.env.HA_TOKEN;
+    this.ws = new HomeAssistantWebSocketClient(this.baseUrl, this.token);
   }
 
   async request(path, options = {}) {
@@ -165,39 +171,41 @@ export class HomeAssistantClient {
   // ─── Áreas / Habitaciones ─────────────────────────────────────
 
   /**
-   * Obtiene el área registry via REST (HA 2023.4+).
-   * Fallback: inferir áreas desde atributos de entidades.
+   * Obtiene el área registry. No existe como endpoint REST en HA moderno —
+   * solo via WebSocket (config/area_registry/list).
    */
   async getAreaRegistry() {
-    try {
-      const res = await this.request('/config/area_registry');
-      return res.json();
-    } catch {
-      return this.getAreasFromEntities();
-    }
+    return this.ws.command('config/area_registry/list');
   }
 
   /**
-   * Infiere áreas desde los atributos de las entidades (fallback).
+   * Agrupa las entidades por área, combinando entity_registry (área propia o
+   * heredada del dispositivo) con device_registry.
    */
   async getAreasFromEntities() {
-    const res = await this.request('/states');
-    const states = await res.json();
-    const areas = new Map();
+    const [areas, entities, devices] = await Promise.all([
+      this.ws.command('config/area_registry/list'),
+      this.ws.command('config/entity_registry/list'),
+      this.ws.command('config/device_registry/list'),
+    ]);
 
-    for (const s of states) {
-      const area = s.attributes?.area_id || s.attributes?.room;
-      if (area) {
-        if (!areas.has(area)) areas.set(area, []);
-        areas.get(area).push({
-          entity_id: s.entity_id,
-          friendly_name: s.attributes?.friendly_name,
-          state: s.state,
-        });
-      }
+    const deviceAreaById = new Map(devices.map((d) => [d.id, d.area_id]));
+    const allStates = await this.getAllStates();
+    const stateByEntityId = new Map(allStates.map((s) => [s.entity_id, s]));
+
+    const grouped = new Map(areas.map((a) => [a.area_id, { ...a, entities: [] }]));
+    for (const entity of entities) {
+      const areaId = entity.area_id ?? deviceAreaById.get(entity.device_id);
+      if (!areaId || !grouped.has(areaId)) continue;
+      const state = stateByEntityId.get(entity.entity_id);
+      grouped.get(areaId).entities.push({
+        entity_id: entity.entity_id,
+        friendly_name: state?.friendly_name ?? entity.name ?? entity.original_name,
+        state: state?.state,
+      });
     }
 
-    return Object.fromEntries(areas);
+    return [...grouped.values()];
   }
 
   // ─── Historial y eventos ──────────────────────────────────────
@@ -232,22 +240,17 @@ export class HomeAssistantClient {
 
   // ─── Dashboards Lovelace ──────────────────────────────────────
 
-  /** Obtiene la configuración actual del dashboard Lovelace por defecto */
+  /** Obtiene la configuración actual del dashboard Lovelace por defecto (solo WebSocket). */
   async getDashboard() {
-    const res = await this.request('/lovelace/config');
-    return res.json();
+    return this.ws.command('lovelace/config', { url_path: null });
   }
 
   /**
-   * Guarda/reemplaza el dashboard Lovelace por defecto.
+   * Guarda/reemplaza el dashboard Lovelace por defecto (solo WebSocket).
    * Nota: solo afecta el dashboard por defecto. Requiere modo storage en HA.
    */
   async saveDashboard(config) {
-    const res = await this.request('/lovelace/config', {
-      method: 'POST',
-      body: JSON.stringify(config),
-    });
-    return res.json();
+    return this.ws.command('lovelace/config/save', { url_path: null, config });
   }
 
   /**
@@ -259,9 +262,8 @@ export class HomeAssistantClient {
 
     switch (type) {
       case 'rooms': {
-        const areas = await this.getAreaRegistry();
-        const allEntities = await this.getAllStates();
-        config = buildRoomsDashboard(areas, allEntities);
+        const areas = await this.getAreasFromEntities();
+        config = buildRoomsDashboard(areas, []);
         break;
       }
       case 'energy': {
@@ -409,37 +411,16 @@ export class HomeAssistantClient {
 
   // ─── Entity Registry ──────────────────────────────────────────
 
-  /**
-   * Lista entidades con metadata del registro. Intenta el endpoint REST no documentado
-   * y cae en fallback sobre /states si no está disponible.
-   */
+  /** Lista entidades con metadata del registro (config/entity_registry/list, solo WebSocket). */
   async listEntityRegistry(domain = null) {
-    let all;
-    try {
-      const res = await this.request('/config/entity_registry');
-      all = await res.json();
-    } catch {
-      // GET /api/config/entity_registry is undocumented and removed in newer HA versions.
-      // Fall back to /states which has entity_id, state, and attributes.
-      const res = await this.request('/states');
-      const states = await res.json();
-      all = states.map(s => ({
-        entity_id: s.entity_id,
-        name: s.attributes?.friendly_name ?? null,
-        state: s.state,
-        platform: s.entity_id.split('.')[0],
-        area_id: s.attributes?.area_id ?? null,
-        disabled_by: null,
-      }));
-    }
+    const all = await this.ws.command('config/entity_registry/list');
     if (!domain) return all;
     return all.filter(e => e.entity_id.startsWith(`${domain}.`));
   }
 
   /** Obtiene la entrada del registro para una entidad específica */
   async getEntityRegistryEntry(entityId) {
-    const res = await this.request(`/config/entity_registry/${entityId}`);
-    return res.json();
+    return this.ws.command('config/entity_registry/get', { entity_id: entityId });
   }
 
   /**
@@ -447,32 +428,18 @@ export class HomeAssistantClient {
    * Permite renombrar, reasignar área, cambiar entity_id, deshabilitar y cambiar icono.
    */
   async updateEntityRegistryEntry(entityId, { name, newEntityId, areaId, disabled, icon } = {}) {
-    const body = {};
-    if (name !== undefined) body.name = name;
-    if (newEntityId !== undefined) body.new_entity_id = newEntityId;
-    if (areaId !== undefined) body.area_id = areaId;
-    if (disabled !== undefined) body.disabled_by = disabled ? 'user' : null;
-    if (icon !== undefined) body.icon = icon;
-    const res = await this.request(`/config/entity_registry/${entityId}`, {
-      method: 'POST',
-      body: JSON.stringify(body),
-    });
-    return res.json();
+    const payload = { entity_id: entityId };
+    if (name !== undefined) payload.name = name;
+    if (newEntityId !== undefined) payload.new_entity_id = newEntityId;
+    if (areaId !== undefined) payload.area_id = areaId;
+    if (disabled !== undefined) payload.disabled_by = disabled ? 'user' : null;
+    if (icon !== undefined) payload.icon = icon;
+    return this.ws.command('config/entity_registry/update', payload);
   }
 
-  /** Lista el registro de dispositivos. Fallback a info básica de estados si no disponible. */
+  /** Lista el registro de dispositivos (config/device_registry/list, solo WebSocket). */
   async listDeviceRegistry() {
-    try {
-      const res = await this.request('/config/device_registry');
-      return res.json();
-    } catch {
-      // GET /api/config/device_registry is undocumented in newer HA versions.
-      // Return a clear message instead of a cryptic 404.
-      throw new Error(
-        'Device registry list is not available via REST API in this Home Assistant version. ' +
-        'Use ha_list_entity_registry to see entities and their metadata instead.'
-      );
-    }
+    return this.ws.command('config/device_registry/list');
   }
 
   // ─── Helpers ──────────────────────────────────────────────────
@@ -487,38 +454,29 @@ export class HomeAssistantClient {
       : ['input_boolean', 'input_number', 'input_select', 'input_text', 'counter', 'timer'];
     const results = {};
     for (const d of domains) {
-      try {
-        const res = await this.request(`/config/${d}`);
-        const data = await res.json();
-        results[d] = data.items ?? (Array.isArray(data) ? data : Object.values(data).filter(v => typeof v === 'object'));
-      } catch {
-        results[d] = [];
-      }
+      results[d] = await this.ws.command(`${d}/list`);
     }
     return domain ? results[domain] : results;
   }
 
   /**
-   * Crea un helper.
+   * Crea un helper. El "id" se genera automáticamente a partir de "name" — no se debe enviar.
    * Ejemplos de config por tipo:
-   * input_boolean:  { id, name, icon }
-   * input_number:   { id, name, min, max, step, unit_of_measurement, mode }  mode: slider|box
-   * input_select:   { id, name, options: [...], icon }
-   * input_text:     { id, name, min, max, pattern, mode }  mode: text|password
-   * counter:        { id, name, initial, minimum, maximum, step, restore }
-   * timer:          { id, name, duration: "HH:MM:SS", restore, icon }
+   * input_boolean:  { name, icon }
+   * input_number:   { name, min, max, step, unit_of_measurement, mode }  mode: slider|box
+   * input_select:   { name, options: [...], icon }
+   * input_text:     { name, min, max, pattern, mode }  mode: text|password
+   * counter:        { name, initial, minimum, maximum, step, restore }
+   * timer:          { name, duration: "HH:MM:SS", restore, icon }
    */
   async createHelper(domain, config) {
-    const res = await this.request(`/config/${domain}`, {
-      method: 'POST',
-      body: JSON.stringify(config),
-    });
-    return res.json();
+    const { id, ...rest } = config;
+    return this.ws.command(`${domain}/create`, rest);
   }
 
   /** Elimina un helper por su dominio e ID */
   async deleteHelper(domain, helperId) {
-    await this.request(`/config/${domain}/${helperId}`, { method: 'DELETE' });
+    await this.ws.command(`${domain}/delete`, { [`${domain}_id`]: helperId });
     return { success: true, deleted: `${domain}.${helperId}` };
   }
 
@@ -529,8 +487,7 @@ export class HomeAssistantClient {
    * Útil para saber qué sensores tienen histórico aggregado disponible.
    */
   async listStatisticIds() {
-    const res = await this.request('/recorder/list_statistic_ids');
-    return res.json();
+    return this.ws.command('recorder/list_statistic_ids');
   }
 
   /**
@@ -539,18 +496,14 @@ export class HomeAssistantClient {
    * startTime: ISO 8601, ej: new Date(Date.now() - 30 * 86400000).toISOString()
    */
   async getStatistics(statisticIds, startTime, period = 'day', endTime = null) {
-    const body = {
+    const payload = {
       start_time: startTime,
       statistic_ids: Array.isArray(statisticIds) ? statisticIds : [statisticIds],
       period,
       types: ['min', 'max', 'mean', 'sum', 'state'],
     };
-    if (endTime) body.end_time = endTime;
-    const res = await this.request('/recorder/statistics_during_period', {
-      method: 'POST',
-      body: JSON.stringify(body),
-    });
-    return res.json();
+    if (endTime) payload.end_time = endTime;
+    return this.ws.command('recorder/statistics_during_period', payload);
   }
 
   // ─── Descubrimiento de servicios ──────────────────────────────
@@ -707,69 +660,43 @@ export class HomeAssistantClient {
     try { return JSON.parse(text); } catch { return { result: text }; }
   }
 
-  // ─── Backups (HA 2024.11+ API) ────────────────────────────────
+  // ─── Backups (solo WebSocket — backup/info, backup/generate, backup/restore) ──
 
   /** Lista todos los backups disponibles */
   async listBackups() {
-    const res = await this.request('/backup');
-    const data = await res.json();
+    const data = await this.ws.command('backup/info');
     return data?.backups ?? data;
   }
 
   /** Crea un backup completo. Operación asíncrona — puede tardar varios minutos. */
   async createBackup(name = null) {
-    const body = {
+    const payload = {
       agent_ids: ['backup.local'],
       include_homeassistant: true,
       include_all_addons: false,
       include_folders: [],
     };
-    if (name) body.name = name;
-    const res = await this.request('/backup/generate', {
-      method: 'POST',
-      body: JSON.stringify(body),
-    });
-    const data = await res.json();
-    return data?.backup_job_id ? data : (data?.data ?? data);
+    if (name) payload.name = name;
+    return this.ws.command('backup/generate', payload);
   }
 
   // ─── Recorder ─────────────────────────────────────────────────
 
-  /** Purga el historial antiguo del recorder manteniendo los últimos N días */
+  /** Purga el historial antiguo del recorder manteniendo los últimos N días (servicio recorder.purge) */
   async purgeHistory(keepDays = 30, repack = false) {
-    const res = await this.request('/recorder/purge', {
-      method: 'POST',
-      body: JSON.stringify({ keep_days: keepDays, repack }),
-    });
-    return res.json();
+    return this.callService('recorder', 'purge', { keep_days: keepDays, repack });
   }
 
-  // ─── Floor y Label registries ─────────────────────────────────
+  // ─── Floor y Label registries (solo WebSocket) ─────────────────
 
   /** Lista los pisos/plantas configurados (HA 2023.9+) */
   async listFloors() {
-    try {
-      const res = await this.request('/config/floor_registry');
-      return res.json();
-    } catch {
-      throw new Error(
-        'Floor registry is not available via REST API in this Home Assistant version. ' +
-        'Use the Home Assistant UI or WebSocket API to manage floors.'
-      );
-    }
+    return this.ws.command('config/floor_registry/list');
   }
 
   /** Lista las etiquetas configuradas (HA 2024.4+) */
   async listLabels() {
-    try {
-      const res = await this.request('/config/label_registry');
-      return res.json();
-    } catch {
-      throw new Error(
-        'Label registry is not available via REST API in this Home Assistant version. ' +
-        'Use the Home Assistant UI or WebSocket API to manage labels.'
-      );
-    }
+    return this.ws.command('config/label_registry/list');
   }
 
   // ─── Intent ───────────────────────────────────────────────────
@@ -799,34 +726,24 @@ export class HomeAssistantClient {
    * folders válidos: 'ssl', 'share', 'addons/local', 'media'
    */
   async createPartialBackup(config) {
-    const body = {
+    const payload = {
       agent_ids: config.agent_ids ?? ['backup.local'],
       include_homeassistant: config.include_homeassistant ?? true,
       include_all_addons: config.include_all_addons ?? false,
       include_folders: config.include_folders ?? [],
     };
-    if (config.name) body.name = config.name;
-    const res = await this.request('/backup/generate', {
-      method: 'POST',
-      body: JSON.stringify(body),
-    });
-    const data = await res.json();
-    return data?.backup_job_id ? data : (data?.data ?? data);
+    if (config.name) payload.name = config.name;
+    return this.ws.command('backup/generate', payload);
   }
 
   /**
-   * Restaura un backup completo por su slug.
-   * Obtén el slug con listBackups(). La operación reinicia HA.
+   * Restaura un backup completo por su backup_id (slug).
+   * Obtén el backup_id con listBackups(). La operación reinicia HA.
    */
   async restoreBackup(slug, password = null) {
-    const body = { agent_id: 'backup.local' };
-    if (password) body.password = password;
-    const res = await this.request(`/backup/${slug}/restore`, {
-      method: 'POST',
-      body: JSON.stringify(body),
-    });
-    const data = await res.json();
-    return data?.data ?? data;
+    const payload = { backup_id: slug, agent_id: 'backup.local' };
+    if (password) payload.password = password;
+    return this.ws.command('backup/restore', payload);
   }
 }
 
