@@ -59,6 +59,13 @@ npm start
 - *"Lista todas mis automatizaciones"*
 - *"Activa la escena de cine"*
 - *"¿Cuánto consume el sensor de energía ahora?"*
+- *"¿Qué se rompe si borro el sensor de la cocina?"* (búsqueda de relaciones)
+- *"¿Por qué no se disparó la automatización de las luces anoche?"* (trazas de ejecución)
+- *"Agrega leche a la lista de compras"* / *"¿Qué hay pendiente en mi lista de tareas?"*
+- *"¿Hay algún problema o aviso pendiente en Home Assistant?"* (Repairs)
+- *"Corrige el consumo del medidor de energía, se reinició ayer"*
+- *"Busca música de rock en mi media source"*
+- *"Configura una integración nueva de MQTT"*
 
 ## Agregar más integraciones
 

@@ -745,6 +745,300 @@ export class HomeAssistantClient {
     if (password) payload.password = password;
     return this.ws.command('backup/restore', payload);
   }
+
+  /**
+   * Verifica que un backup existe y descargable, devolviendo su tamaño y tipo.
+   * No transfiere el contenido binario (evita saturar la respuesta) — usa la URL
+   * ${HA_URL}/api/backup/download/{backup_id}?agent_id=...&password=... con el token
+   * como Bearer para descargarlo directamente.
+   */
+  async checkBackupDownload(backupId, agentId = 'backup.local', password = null) {
+    const params = new URLSearchParams({ agent_id: agentId });
+    if (password) params.set('password', password);
+    const res = await this.request(`/backup/download/${backupId}?${params}`);
+    return {
+      downloadable: true,
+      content_type: res.headers.get('content-type'),
+      content_length: res.headers.get('content-length'),
+      content_disposition: res.headers.get('content-disposition'),
+    };
+  }
+
+  /**
+   * Sube un archivo de backup (.tar) codificado en base64 y lo registra en los agentes indicados.
+   */
+  async uploadBackupFile(base64Content, filename, agentIds = ['backup.local']) {
+    const buffer = Buffer.from(base64Content, 'base64');
+    const form = new FormData();
+    form.append('file', new Blob([buffer]), filename);
+    const params = new URLSearchParams();
+    for (const id of agentIds) params.append('agent_id', id);
+    const res = await fetch(`${this.baseUrl}/api/backup/upload?${params}`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${this.token}` },
+      body: form,
+    });
+    if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      throw new Error(`Home Assistant ${res.status} en /backup/upload: ${body.slice(0, 200)}`);
+    }
+    return res.json();
+  }
+
+  // ─── Búsqueda de relaciones ────────────────────────────────────
+
+  /**
+   * Encuentra todo lo que referencia a un item (área, automatización, config_entry,
+   * dispositivo, entidad, grupo, escena, script o persona). Ideal para saber qué se
+   * rompe antes de borrar o renombrar algo.
+   */
+  async searchRelated(itemType, itemId) {
+    return this.ws.command('search/related', { item_type: itemType, item_id: itemId });
+  }
+
+  // ─── Trazas de ejecución (debugging) ───────────────────────────
+
+  /** Lista las ejecuciones (traces) registradas de una automatización o script. */
+  async listTraces(domain, itemId = null) {
+    const payload = { domain };
+    if (itemId) payload.item_id = itemId;
+    return this.ws.command('trace/list', payload);
+  }
+
+  /** Obtiene la traza detallada (paso a paso: triggers, conditions, actions) de una ejecución. */
+  async getTrace(domain, itemId, runId) {
+    return this.ws.command('trace/get', { domain, item_id: itemId, run_id: runId });
+  }
+
+  /** Lista los context_id que tienen traza asociada, útil para seguir cadenas de automatizaciones. */
+  async getTraceContexts(domain = null, itemId = null) {
+    const payload = {};
+    if (domain) payload.domain = domain;
+    if (itemId) payload.item_id = itemId;
+    return this.ws.command('trace/contexts', payload);
+  }
+
+  // ─── Listas de tareas (todo) ────────────────────────────────────
+
+  /** Lista los ítems de una lista de tareas/compras (entidad todo.*). */
+  async listTodoItems(entityId) {
+    return this.ws.command('todo/item/list', { entity_id: entityId });
+  }
+
+  /** Reordena un ítem de una lista de tareas, colocándolo después de previousUid (null = al principio). */
+  async moveTodoItem(entityId, uid, previousUid = null) {
+    const payload = { entity_id: entityId, uid };
+    if (previousUid !== null) payload.previous_uid = previousUid;
+    return this.ws.command('todo/item/move', payload);
+  }
+
+  // ─── Logbook filtrable (WebSocket) ──────────────────────────────
+
+  /**
+   * Consulta el logbook con filtros avanzados (por entidad, dispositivo o context_id),
+   * más flexible que getLogbook (que solo filtra por periodo y una entidad).
+   */
+  async getLogbookEventsFiltered({ startTime, endTime, entityIds, deviceIds, contextId }) {
+    const payload = { start_time: startTime };
+    if (endTime) payload.end_time = endTime;
+    if (entityIds) payload.entity_ids = entityIds;
+    if (deviceIds) payload.device_ids = deviceIds;
+    if (contextId) payload.context_id = contextId;
+    return this.ws.command('logbook/get_events', payload);
+  }
+
+  // ─── Estadísticas del recorder (avanzado) ──────────────────────
+
+  /** Detecta inconsistencias en las estadísticas de largo plazo (útil antes de confiar en el dashboard de energía). */
+  async validateStatistics() {
+    return this.ws.command('recorder/validate_statistics');
+  }
+
+  /** Metadata (unidad, nombre, fuente) de una o más estadísticas. Omitir statisticIds para todas. */
+  async getStatisticsMetadata(statisticIds = null) {
+    const payload = {};
+    if (statisticIds) payload.statistic_ids = statisticIds;
+    return this.ws.command('recorder/get_statistics_metadata', payload);
+  }
+
+  /**
+   * Corrige una estadística acumulada (sum) sumando un ajuste en un punto del tiempo.
+   * Útil cuando un medidor de energía se reinició y las lecturas quedaron descuadradas.
+   */
+  async adjustSumStatistics(statisticId, startTime, adjustment, adjustmentUnit = null) {
+    return this.ws.command('recorder/adjust_sum_statistics', {
+      statistic_id: statisticId,
+      start_time: startTime,
+      adjustment,
+      adjustment_unit_of_measurement: adjustmentUnit,
+    });
+  }
+
+  // ─── Media source (explorar/buscar contenido reproducible) ─────
+
+  /** Explora el árbol de fuentes de media (medios locales, TTS, etc.). Omitir mediaContentId para la raíz. */
+  async browseMedia(mediaContentId = '') {
+    return this.ws.command('media_source/browse_media', { media_content_id: mediaContentId });
+  }
+
+  /** Busca contenido dentro de una fuente de media. */
+  async searchMedia(query, mediaContentId = '', filterClasses = null) {
+    const payload = { media_content_id: mediaContentId, search_query: query };
+    if (filterClasses) payload.media_filter_classes = filterClasses;
+    return this.ws.command('media_source/search_media', payload);
+  }
+
+  /** Resuelve un media_content_id a una URL reproducible (con expiración en segundos). */
+  async resolveMedia(mediaContentId, expires = null) {
+    const payload = { media_content_id: mediaContentId };
+    if (expires) payload.expires = expires;
+    return this.ws.command('media_source/resolve_media', payload);
+  }
+
+  // ─── Dashboard de Energía ───────────────────────────────────────
+
+  /** Metadata de las fuentes de energía configuradas (grid, solar, gas, agua, dispositivos). */
+  async getEnergyInfo() {
+    return this.ws.command('energy/info');
+  }
+
+  /** Preferencias completas del dashboard de Energía (fuentes configuradas y su config). */
+  async getEnergyPreferences() {
+    return this.ws.command('energy/get_prefs');
+  }
+
+  /** Valida la configuración de energía y reporta problemas (sensores faltantes, unidades incorrectas, etc.). */
+  async validateEnergyPreferences() {
+    return this.ws.command('energy/validate');
+  }
+
+  /** Pronóstico de producción solar del día, si hay integración de forecast solar configurada. */
+  async getSolarForecast() {
+    return this.ws.command('energy/solar_forecast');
+  }
+
+  // ─── Categorías ──────────────────────────────────────────────────
+
+  /** Lista las categorías configuradas dentro de un scope (ej: "automation", "script"). */
+  async listCategories(scope) {
+    return this.ws.command('config/category_registry/list', { scope });
+  }
+
+  /** Crea una categoría dentro de un scope. */
+  async createCategory(scope, name, icon = null) {
+    const payload = { scope, name };
+    if (icon !== null) payload.icon = icon;
+    return this.ws.command('config/category_registry/create', payload);
+  }
+
+  /** Actualiza el nombre/icono de una categoría existente. */
+  async updateCategory(scope, categoryId, { name, icon } = {}) {
+    const payload = { scope, category_id: categoryId };
+    if (name !== undefined) payload.name = name;
+    if (icon !== undefined) payload.icon = icon;
+    return this.ws.command('config/category_registry/update', payload);
+  }
+
+  /** Elimina una categoría de un scope. */
+  async deleteCategory(scope, categoryId) {
+    await this.ws.command('config/category_registry/delete', { scope, category_id: categoryId });
+    return { success: true, deleted: categoryId, scope };
+  }
+
+  // ─── Problemas detectados (Repairs) ─────────────────────────────
+
+  /** Lista los problemas/avisos activos detectados por Home Assistant (config deprecada, integraciones fallando, etc.). */
+  async listRepairIssues() {
+    return this.ws.command('repairs/list_issues');
+  }
+
+  /** Obtiene el detalle (placeholders para el flujo de reparación) de un problema específico. */
+  async getRepairIssueData(domain, issueId) {
+    return this.ws.command('repairs/get_issue_data', { domain, issue_id: issueId });
+  }
+
+  // ─── Gestión de integraciones (config entries avanzado) ─────────
+
+  /** Devuelve config entries filtradas por tipo (ej: ["integration"]) y/o dominio — más preciso que listIntegrations(). */
+  async getConfigEntries(typeFilter = null, domain = null) {
+    const payload = {};
+    if (typeFilter) payload.type_filter = typeFilter;
+    if (domain) payload.domain = domain;
+    return this.ws.command('config_entries/get', payload);
+  }
+
+  /** Lista los handlers de integración instalables (para agregar una integración nueva, no solo recargarla). */
+  async listAvailableIntegrations(typeFilter = null) {
+    const path = typeFilter ? `/config/config_entries/flow_handlers?type=${typeFilter}` : '/config/config_entries/flow_handlers';
+    const res = await this.request(path);
+    return res.json();
+  }
+
+  /** Inicia el flujo de configuración de una integración nueva (o de reconfiguración si se pasa entryId). */
+  async startConfigFlow(handler, entryId = null) {
+    const body = { handler };
+    if (entryId) body.entry_id = entryId;
+    const res = await this.request('/config/config_entries/flow', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+    return res.json();
+  }
+
+  /** Obtiene el paso actual (formulario/schema) de un flujo de configuración en curso. */
+  async getConfigFlowStep(flowId) {
+    const res = await this.request(`/config/config_entries/flow/${flowId}`);
+    return res.json();
+  }
+
+  /** Envía los datos de un paso del flujo de configuración y avanza al siguiente. */
+  async advanceConfigFlow(flowId, userInput) {
+    const res = await this.request(`/config/config_entries/flow/${flowId}`, {
+      method: 'POST',
+      body: JSON.stringify(userInput),
+    });
+    return res.json();
+  }
+
+  // ─── Red ─────────────────────────────────────────────────────────
+
+  /** Lista los adaptadores de red configurados y su estado. */
+  async getNetworkAdapters() {
+    return this.ws.command('network');
+  }
+
+  /** URLs internas/externas/de Nabu Casa configuradas para acceder a esta instancia. */
+  async getNetworkUrls() {
+    return this.ws.command('network/url');
+  }
+
+  // ─── Conversación / Asistente ────────────────────────────────────
+
+  /**
+   * Envía texto libre al motor de conversación de HA (más flexible que handleIntent,
+   * que requiere un intent estructurado). Devuelve la respuesta y las acciones ejecutadas.
+   */
+  async processConversation(text, { conversationId, language, agentId, deviceId } = {}) {
+    const payload = { text };
+    if (conversationId) payload.conversation_id = conversationId;
+    if (language) payload.language = language;
+    if (agentId) payload.agent_id = agentId;
+    if (deviceId) payload.device_id = deviceId;
+    return this.ws.command('conversation/process', payload);
+  }
+
+  /** Lista los agentes de conversación disponibles, opcionalmente filtrados por idioma/país. */
+  async listConversationAgents(language = null, country = null) {
+    const payload = {};
+    if (language) payload.language = language;
+    if (country) payload.country = country;
+    return this.ws.command('conversation/agent/list', payload);
+  }
+
+  /** Lista los idiomas soportados por el pipeline de Assist. */
+  async listAssistLanguages() {
+    return this.ws.command('assist_pipeline/language/list');
+  }
 }
 
 // ─── Helpers para generar configs Lovelace ───────────────────────────────────

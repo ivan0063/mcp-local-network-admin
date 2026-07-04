@@ -923,6 +923,316 @@ Intents built-in comunes:
     ({ name, slots }) => ha.handleIntent(name, slots ?? {})
   );
 
+  tool(server, 'ha_search_related',
+    `Encuentra todo lo que referencia a un item de Home Assistant. Imprescindible antes de
+borrar o renombrar algo para saber qué se va a romper (automatizaciones, escenas, dashboards, etc.).`,
+    {
+      item_type: z.enum(['area', 'automation', 'config_entry', 'device', 'entity', 'group', 'scene', 'script', 'person'])
+        .describe('Tipo del item a buscar'),
+      item_id: z.string().describe('ID del item (entity_id, area_id, unique_id de automatización, etc.)'),
+    },
+    ({ item_type, item_id }) => ha.searchRelated(item_type, item_id)
+  );
+
+  tool(server, 'ha_list_traces',
+    'Lista las ejecuciones (traces) registradas de una automatización o script — punto de partida para depurar por qué (no) se disparó.',
+    {
+      domain: z.enum(['automation', 'script']).describe('Dominio a inspeccionar'),
+      item_id: z.string().optional().describe('Filtrar por un unique_id específico (opcional, omitir para todas)'),
+    },
+    ({ domain, item_id }) => ha.listTraces(domain, item_id ?? null)
+  );
+
+  tool(server, 'ha_get_trace',
+    'Obtiene la traza detallada paso a paso (triggers, conditions, actions evaluados) de una ejecución específica. Usa ha_list_traces para obtener el run_id.',
+    {
+      domain: z.enum(['automation', 'script']).describe('Dominio'),
+      item_id: z.string().describe('unique_id de la automatización o script'),
+      run_id: z.string().describe('ID de la ejecución (obtenlo con ha_list_traces)'),
+    },
+    ({ domain, item_id, run_id }) => ha.getTrace(domain, item_id, run_id)
+  );
+
+  tool(server, 'ha_get_trace_contexts',
+    'Lista los context_id con traza asociada, útil para seguir cadenas de automatizaciones que se disparan entre sí.',
+    {
+      domain: z.enum(['automation', 'script']).optional().describe('Filtrar por dominio (opcional)'),
+      item_id: z.string().optional().describe('Filtrar por unique_id (opcional, requiere domain)'),
+    },
+    ({ domain, item_id }) => ha.getTraceContexts(domain ?? null, item_id ?? null)
+  );
+
+  tool(server, 'ha_list_todo_items',
+    'Lista los ítems de una lista de tareas/compras de Home Assistant (entidad todo.*).',
+    {
+      entity_id: z.string().describe('ID de la entidad todo, ej: "todo.lista_compras"'),
+    },
+    ({ entity_id }) => ha.listTodoItems(entity_id)
+  );
+
+  tool(server, 'ha_move_todo_item',
+    'Reordena un ítem dentro de una lista de tareas. Para agregar/completar/eliminar ítems usa ha_call_service con domain="todo".',
+    {
+      entity_id: z.string().describe('ID de la entidad todo'),
+      uid: z.string().describe('UID del ítem a mover (obtenlo con ha_list_todo_items)'),
+      previous_uid: z.string().optional().describe('UID del ítem después del cual colocarlo. Omitir para moverlo al principio.'),
+    },
+    ({ entity_id, uid, previous_uid }) => ha.moveTodoItem(entity_id, uid, previous_uid ?? null)
+  );
+
+  tool(server, 'ha_get_logbook_events',
+    `Consulta el logbook con filtros avanzados (entidad, dispositivo o context_id) vía WebSocket.
+Más flexible que ha_get_logbook, que solo filtra por periodo y una entidad.`,
+    {
+      start_time: z.string().describe('Fecha de inicio en ISO 8601'),
+      end_time: z.string().optional().describe('Fecha de fin en ISO 8601 (opcional, default: ahora)'),
+      entity_ids: z.array(z.string()).optional().describe('Filtrar por entidades específicas'),
+      device_ids: z.array(z.string()).optional().describe('Filtrar por dispositivos específicos'),
+      context_id: z.string().optional().describe('Filtrar por un context_id específico (para seguir una cadena de eventos)'),
+    },
+    ({ start_time, end_time, entity_ids, device_ids, context_id }) =>
+      ha.getLogbookEventsFiltered({ startTime: start_time, endTime: end_time, entityIds: entity_ids, deviceIds: device_ids, contextId: context_id })
+  );
+
+  tool(server, 'ha_validate_statistics',
+    'Detecta inconsistencias en las estadísticas de largo plazo del recorder. Corre esto antes de confiar en el dashboard de Energía.',
+    {},
+    () => ha.validateStatistics()
+  );
+
+  tool(server, 'ha_get_statistics_metadata',
+    'Obtiene metadata (unidad, nombre, fuente) de estadísticas de largo plazo. Omitir statistic_ids para todas.',
+    {
+      statistic_ids: z.array(z.string()).optional().describe('IDs de estadísticas a consultar (opcional)'),
+    },
+    ({ statistic_ids }) => ha.getStatisticsMetadata(statistic_ids ?? null)
+  );
+
+  tool(server, 'ha_adjust_sum_statistics',
+    `Corrige una estadística acumulada (sum) sumando un ajuste en un punto del tiempo.
+Útil cuando un medidor de energía/agua se reinició y las lecturas quedaron descuadradas.`,
+    {
+      statistic_id: z.string().describe('ID de la estadística a ajustar'),
+      start_time: z.string().describe('Momento del ajuste en ISO 8601 (debe coincidir con un punto existente)'),
+      adjustment: z.number().describe('Cantidad a sumar (puede ser negativa)'),
+      adjustment_unit_of_measurement: z.string().nullable().optional().describe('Unidad del ajuste, ej: "kWh". null si coincide con la unidad normalizada.'),
+    },
+    ({ statistic_id, start_time, adjustment, adjustment_unit_of_measurement }) =>
+      ha.adjustSumStatistics(statistic_id, start_time, adjustment, adjustment_unit_of_measurement ?? null)
+  );
+
+  tool(server, 'ha_browse_media',
+    'Explora el árbol de fuentes de media disponibles (medios locales, TTS, etc.). Omitir media_content_id para ver la raíz.',
+    {
+      media_content_id: z.string().default('').describe('ID del contenido a explorar (opcional, default: raíz)'),
+    },
+    ({ media_content_id }) => ha.browseMedia(media_content_id ?? '')
+  );
+
+  tool(server, 'ha_search_media',
+    'Busca contenido reproducible dentro de una fuente de media.',
+    {
+      search_query: z.string().describe('Texto a buscar'),
+      media_content_id: z.string().default('').describe('Punto de partida de la búsqueda (opcional, default: raíz)'),
+      media_filter_classes: z.array(z.string()).optional().describe('Filtrar por clase de media, ej: ["music", "movie"]'),
+    },
+    ({ search_query, media_content_id, media_filter_classes }) =>
+      ha.searchMedia(search_query, media_content_id ?? '', media_filter_classes ?? null)
+  );
+
+  tool(server, 'ha_resolve_media',
+    'Resuelve un media_content_id a una URL reproducible, para usar con ha_control_media_player (play_media).',
+    {
+      media_content_id: z.string().describe('ID del contenido a resolver (obtenlo con ha_browse_media o ha_search_media)'),
+      expires: z.number().int().positive().optional().describe('Segundos de validez de la URL (opcional)'),
+    },
+    ({ media_content_id, expires }) => ha.resolveMedia(media_content_id, expires ?? null)
+  );
+
+  tool(server, 'ha_get_energy_info',
+    'Metadata de las fuentes de energía configuradas (grid, solar, gas, agua, dispositivos monitoreados).',
+    {},
+    () => ha.getEnergyInfo()
+  );
+
+  tool(server, 'ha_get_energy_preferences',
+    'Preferencias completas del dashboard de Energía: fuentes configuradas y su configuración detallada.',
+    {},
+    () => ha.getEnergyPreferences()
+  );
+
+  tool(server, 'ha_validate_energy_preferences',
+    'Valida la configuración del dashboard de Energía y reporta problemas (sensores faltantes, unidades incorrectas, etc.).',
+    {},
+    () => ha.validateEnergyPreferences()
+  );
+
+  tool(server, 'ha_get_solar_forecast',
+    'Pronóstico de producción solar del día, si hay una integración de forecast solar configurada.',
+    {},
+    () => ha.getSolarForecast()
+  );
+
+  tool(server, 'ha_list_categories',
+    'Lista las categorías configuradas dentro de un scope (ej: "automation", "script") para organizar entidades sin usar áreas.',
+    {
+      scope: z.string().describe('Scope de las categorías, ej: "automation", "script", "entity"'),
+    },
+    ({ scope }) => ha.listCategories(scope)
+  );
+
+  tool(server, 'ha_create_category',
+    'Crea una categoría dentro de un scope.',
+    {
+      scope: z.string().describe('Scope de la categoría, ej: "automation"'),
+      name: z.string().describe('Nombre de la categoría'),
+      icon: z.string().nullable().optional().describe('Icono MDI (opcional)'),
+    },
+    ({ scope, name, icon }) => ha.createCategory(scope, name, icon ?? null)
+  );
+
+  tool(server, 'ha_update_category',
+    'Actualiza el nombre/icono de una categoría existente.',
+    {
+      scope: z.string().describe('Scope de la categoría'),
+      category_id: z.string().describe('ID de la categoría (obtenlo con ha_list_categories)'),
+      name: z.string().optional().describe('Nuevo nombre (opcional)'),
+      icon: z.string().nullable().optional().describe('Nuevo icono MDI (opcional)'),
+    },
+    ({ scope, category_id, name, icon }) => ha.updateCategory(scope, category_id, { name, icon })
+  );
+
+  tool(server, 'ha_delete_category',
+    'Elimina una categoría de un scope.',
+    {
+      scope: z.string().describe('Scope de la categoría'),
+      category_id: z.string().describe('ID de la categoría a eliminar'),
+    },
+    ({ scope, category_id }) => ha.deleteCategory(scope, category_id)
+  );
+
+  tool(server, 'ha_list_repair_issues',
+    'Lista los problemas/avisos activos detectados por Home Assistant: configuración deprecada, integraciones fallando, etc. Chequeo de salud proactivo.',
+    {},
+    () => ha.listRepairIssues()
+  );
+
+  tool(server, 'ha_get_repair_issue_data',
+    'Obtiene el detalle de un problema específico detectado por Home Assistant (placeholders para su flujo de reparación).',
+    {
+      domain: z.string().describe('Dominio de la integración que reportó el problema'),
+      issue_id: z.string().describe('ID del problema (obtenlo con ha_list_repair_issues)'),
+    },
+    ({ domain, issue_id }) => ha.getRepairIssueData(domain, issue_id)
+  );
+
+  tool(server, 'ha_get_config_entries',
+    'Devuelve config entries filtradas por tipo y/o dominio — más preciso que ha_list_integrations cuando hay muchas integraciones.',
+    {
+      type_filter: z.array(z.string()).optional().describe('Filtrar por tipo, ej: ["integration"] (opcional)'),
+      domain: z.string().optional().describe('Filtrar por dominio, ej: "mqtt" (opcional)'),
+    },
+    ({ type_filter, domain }) => ha.getConfigEntries(type_filter ?? null, domain ?? null)
+  );
+
+  tool(server, 'ha_list_available_integrations',
+    'Lista los handlers de integración instalables en Home Assistant — el primer paso para agregar una integración nueva (no solo recargar una existente).',
+    {
+      type_filter: z.string().optional().describe('Filtrar por tipo de integración (opcional)'),
+    },
+    ({ type_filter }) => ha.listAvailableIntegrations(type_filter ?? null)
+  );
+
+  tool(server, 'ha_start_config_flow',
+    `Inicia el flujo de configuración de una integración nueva (o de reconfiguración si se pasa entry_id).
+Devuelve el primer paso (formulario/schema) — continúalo con ha_advance_config_flow.`,
+    {
+      handler: z.string().describe('Nombre del dominio/integración a configurar, ej: "mqtt" (obtenlo con ha_list_available_integrations)'),
+      entry_id: z.string().optional().describe('ID de una config entry existente, para reconfigurarla en vez de crear una nueva'),
+    },
+    ({ handler, entry_id }) => ha.startConfigFlow(handler, entry_id ?? null)
+  );
+
+  tool(server, 'ha_get_config_flow_step',
+    'Obtiene el paso actual (formulario/schema pendiente) de un flujo de configuración en curso.',
+    {
+      flow_id: z.string().describe('ID del flujo (obtenlo de ha_start_config_flow o ha_advance_config_flow)'),
+    },
+    ({ flow_id }) => ha.getConfigFlowStep(flow_id)
+  );
+
+  tool(server, 'ha_advance_config_flow',
+    'Envía los datos de un paso del flujo de configuración (los campos que pida el schema del paso actual) y avanza al siguiente.',
+    {
+      flow_id: z.string().describe('ID del flujo en curso'),
+      user_input: z.record(z.unknown()).describe('Datos del paso actual, según el schema devuelto por el paso anterior'),
+    },
+    ({ flow_id, user_input }) => ha.advanceConfigFlow(flow_id, user_input)
+  );
+
+  tool(server, 'ha_get_network_adapters',
+    'Lista los adaptadores de red configurados en Home Assistant y su estado (habilitado, IPv4/IPv6, auto-config).',
+    {},
+    () => ha.getNetworkAdapters()
+  );
+
+  tool(server, 'ha_get_network_urls',
+    'URLs internas/externas/de Nabu Casa configuradas para acceder a esta instancia de Home Assistant.',
+    {},
+    () => ha.getNetworkUrls()
+  );
+
+  tool(server, 'ha_process_conversation',
+    `Envía texto libre en lenguaje natural al motor de conversación de Home Assistant.
+Más flexible que ha_handle_intent (que requiere un intent estructurado) — soporta frases completas.`,
+    {
+      text: z.string().describe('Texto en lenguaje natural, ej: "enciende la luz de la sala"'),
+      conversation_id: z.string().optional().describe('ID de conversación para mantener contexto entre turnos (opcional)'),
+      language: z.string().optional().describe('Código de idioma, ej: "es" (opcional)'),
+      agent_id: z.string().optional().describe('ID del agente de conversación a usar (opcional, obtenlo con ha_list_conversation_agents)'),
+      device_id: z.string().optional().describe('ID del dispositivo origen (opcional)'),
+    },
+    ({ text, conversation_id, language, agent_id, device_id }) =>
+      ha.processConversation(text, { conversationId: conversation_id, language, agentId: agent_id, deviceId: device_id })
+  );
+
+  tool(server, 'ha_list_conversation_agents',
+    'Lista los agentes de conversación disponibles en Home Assistant, opcionalmente filtrados por idioma/país.',
+    {
+      language: z.string().optional().describe('Código de idioma (opcional)'),
+      country: z.string().optional().describe('Código de país (opcional)'),
+    },
+    ({ language, country }) => ha.listConversationAgents(language ?? null, country ?? null)
+  );
+
+  tool(server, 'ha_list_assist_languages',
+    'Lista los idiomas soportados por el pipeline de Assist (asistente de voz/conversación) de Home Assistant.',
+    {},
+    () => ha.listAssistLanguages()
+  );
+
+  tool(server, 'ha_check_backup_download',
+    `Verifica que un backup existe y es descargable, devolviendo su tamaño y tipo de contenido.
+No transfiere el archivo binario — para descargarlo usa directamente
+\${HA_URL}/api/backup/download/{backup_id}?agent_id=... con el token como header Authorization: Bearer.`,
+    {
+      backup_id: z.string().describe('Slug del backup (obtenlo con ha_list_backups)'),
+      agent_id: z.string().default('backup.local').describe('Agente de backup (default: "backup.local")'),
+      password: z.string().optional().describe('Contraseña del backup si fue cifrado'),
+    },
+    ({ backup_id, agent_id, password }) => ha.checkBackupDownload(backup_id, agent_id ?? 'backup.local', password ?? null)
+  );
+
+  tool(server, 'ha_upload_backup',
+    'Sube un archivo de backup (.tar) codificado en base64 y lo registra en Home Assistant.',
+    {
+      base64_content: z.string().describe('Contenido del archivo .tar codificado en base64'),
+      filename: z.string().describe('Nombre del archivo, ej: "backup.tar"'),
+      agent_ids: z.array(z.string()).default(['backup.local']).describe('Agentes de backup donde registrarlo (default: ["backup.local"])'),
+    },
+    ({ base64_content, filename, agent_ids }) => ha.uploadBackupFile(base64_content, filename, agent_ids ?? ['backup.local'])
+  );
+
   // ── PostgreSQL tools ─────────────────────────────────────────────────────────
 
   tool(server, 'pg_connect',
@@ -1851,7 +2161,7 @@ app.use((req, res, next) => {
 });
 
 const JENKINS_TOOLS = 20;
-const HA_TOOLS = 71;
+const HA_TOOLS = 106;
 const PG_TOOLS = 22;
 const DOCKER_TOOLS = 19;
 const SSH_TOOLS = 12;
