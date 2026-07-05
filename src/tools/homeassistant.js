@@ -425,15 +425,19 @@ export class HomeAssistantClient {
 
   /**
    * Actualiza la entrada del registro de una entidad.
-   * Permite renombrar, reasignar área, cambiar entity_id, deshabilitar y cambiar icono.
+   * Permite renombrar, reasignar área, cambiar entity_id, deshabilitar, cambiar icono,
+   * y asignar categorías/labels. Funciona igual para automatizaciones y scripts, ya que
+   * son entidades (automation.x, script.x) bajo el mismo registro.
    */
-  async updateEntityRegistryEntry(entityId, { name, newEntityId, areaId, disabled, icon } = {}) {
+  async updateEntityRegistryEntry(entityId, { name, newEntityId, areaId, disabled, icon, categories, labels } = {}) {
     const payload = { entity_id: entityId };
     if (name !== undefined) payload.name = name;
     if (newEntityId !== undefined) payload.new_entity_id = newEntityId;
     if (areaId !== undefined) payload.area_id = areaId;
     if (disabled !== undefined) payload.disabled_by = disabled ? 'user' : null;
     if (icon !== undefined) payload.icon = icon;
+    if (categories !== undefined) payload.categories = categories;
+    if (labels !== undefined) payload.labels = labels;
     return this.ws.command('config/entity_registry/update', payload);
   }
 
@@ -697,6 +701,35 @@ export class HomeAssistantClient {
   /** Lista las etiquetas configuradas (HA 2024.4+) */
   async listLabels() {
     return this.ws.command('config/label_registry/list');
+  }
+
+  /**
+   * Crea una etiqueta (label). Las labels son globales (no tienen scope, a diferencia
+   * de las categorías) y se pueden asignar a cualquier entidad, área o dispositivo.
+   * color: nombre de color de Material Design, ej: "blue", "red", "green" (opcional)
+   */
+  async createLabel(name, { color, description, icon } = {}) {
+    const payload = { name };
+    if (color !== undefined) payload.color = color;
+    if (description !== undefined) payload.description = description;
+    if (icon !== undefined) payload.icon = icon;
+    return this.ws.command('config/label_registry/create', payload);
+  }
+
+  /** Actualiza nombre/color/descripción/icono de una etiqueta existente. */
+  async updateLabel(labelId, { name, color, description, icon } = {}) {
+    const payload = { label_id: labelId };
+    if (name !== undefined) payload.name = name;
+    if (color !== undefined) payload.color = color;
+    if (description !== undefined) payload.description = description;
+    if (icon !== undefined) payload.icon = icon;
+    return this.ws.command('config/label_registry/update', payload);
+  }
+
+  /** Elimina una etiqueta. Se desasigna automáticamente de todo lo que la tuviera. */
+  async deleteLabel(labelId) {
+    await this.ws.command('config/label_registry/delete', { label_id: labelId });
+    return { success: true, deleted: labelId };
   }
 
   // ─── Intent ───────────────────────────────────────────────────

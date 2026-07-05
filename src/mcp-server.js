@@ -571,6 +571,10 @@ Más completo que ha_get_all_entities para tareas de organización.`,
 - Asignar a un área
 - Deshabilitar/habilitar la entidad
 - Cambiar el icono (ej: mdi:lightbulb-outline)
+- Asignar categorías (por scope) y labels
+
+Funciona igual para automatizaciones y scripts (automation.x, script.x), ya que son
+entidades bajo el mismo registro — así se les asigna categoría/label/área.
 
 Nota: cambiar el entity_id romperá las automatizaciones que lo referencien — actualízalas también.`,
     {
@@ -580,9 +584,12 @@ Nota: cambiar el entity_id romperá las automatizaciones que lo referencien — 
       area_id: z.string().optional().nullable().describe('ID del área a asignar. null para quitar el área.'),
       disabled: z.boolean().optional().describe('true para deshabilitar la entidad, false para habilitarla'),
       icon: z.string().optional().nullable().describe('Icono MDI, ej: "mdi:lightbulb". null para usar el default.'),
+      categories: z.record(z.string().nullable()).optional()
+        .describe('Categorías por scope, ej: {"automation": "cat_id"}. Usa ha_list_categories para ver los IDs. null en un scope para quitarla.'),
+      labels: z.array(z.string()).optional().describe('Lista completa de label_ids a asignar (reemplaza las existentes). Usa ha_list_labels para ver los IDs.'),
     },
-    ({ entity_id, name, new_entity_id, area_id, disabled, icon }) =>
-      ha.updateEntityRegistryEntry(entity_id, { name, newEntityId: new_entity_id, areaId: area_id, disabled, icon })
+    ({ entity_id, name, new_entity_id, area_id, disabled, icon, categories, labels }) =>
+      ha.updateEntityRegistryEntry(entity_id, { name, newEntityId: new_entity_id, areaId: area_id, disabled, icon, categories, labels })
   );
 
   tool(server, 'ha_list_device_registry',
@@ -906,6 +913,37 @@ repack=true compacta la base de datos SQLite (tarda más pero libera más espaci
     'Lista las etiquetas configuradas en Home Assistant para organizar entidades y dispositivos (requiere HA 2024.4+).',
     {},
     () => ha.listLabels()
+  );
+
+  tool(server, 'ha_create_label',
+    'Crea una etiqueta (label). A diferencia de las categorías, las labels no tienen scope — se pueden asignar a cualquier entidad, área o dispositivo.',
+    {
+      name: z.string().describe('Nombre de la etiqueta'),
+      color: z.string().optional().describe('Color, ej: "blue", "red", "green" (opcional)'),
+      description: z.string().optional().describe('Descripción (opcional)'),
+      icon: z.string().optional().describe('Icono MDI (opcional)'),
+    },
+    ({ name, color, description, icon }) => ha.createLabel(name, { color, description, icon })
+  );
+
+  tool(server, 'ha_update_label',
+    'Actualiza nombre/color/descripción/icono de una etiqueta existente.',
+    {
+      label_id: z.string().describe('ID de la etiqueta (obtenlo con ha_list_labels)'),
+      name: z.string().optional().describe('Nuevo nombre (opcional)'),
+      color: z.string().optional().describe('Nuevo color (opcional)'),
+      description: z.string().optional().describe('Nueva descripción (opcional)'),
+      icon: z.string().optional().describe('Nuevo icono MDI (opcional)'),
+    },
+    ({ label_id, name, color, description, icon }) => ha.updateLabel(label_id, { name, color, description, icon })
+  );
+
+  tool(server, 'ha_delete_label',
+    'Elimina una etiqueta. Se desasigna automáticamente de todo lo que la tuviera.',
+    {
+      label_id: z.string().describe('ID de la etiqueta a eliminar'),
+    },
+    ({ label_id }) => ha.deleteLabel(label_id)
   );
 
   tool(server, 'ha_handle_intent',
@@ -2161,7 +2199,7 @@ app.use((req, res, next) => {
 });
 
 const JENKINS_TOOLS = 20;
-const HA_TOOLS = 106;
+const HA_TOOLS = 109;
 const PG_TOOLS = 22;
 const DOCKER_TOOLS = 19;
 const SSH_TOOLS = 12;
