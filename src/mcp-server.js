@@ -407,6 +407,46 @@ Ejemplos:
     () => ha.getAreaRegistry()
   );
 
+  const areaOptionsSchema = {
+    floor_id: z.string().nullable().optional().describe('ID del piso al que pertenece (opcional). null para quitarlo.'),
+    icon: z.string().nullable().optional().describe('Icono MDI (opcional)'),
+    picture: z.string().nullable().optional().describe('URL de imagen para el área (opcional)'),
+    aliases: z.array(z.string()).optional().describe('Nombres alternativos para búsqueda/voz (opcional)'),
+    labels: z.array(z.string()).optional().describe('IDs de labels a asignar (opcional)'),
+    temperature_entity_id: z.string().nullable().optional().describe('Entidad sensor de temperatura representativa del área (opcional)'),
+    humidity_entity_id: z.string().nullable().optional().describe('Entidad sensor de humedad representativa del área (opcional)'),
+  };
+
+  tool(server, 'ha_create_area',
+    'Crea un área/habitación nueva. Primer paso para armar la jerarquía piso → área → dispositivo → entidad.',
+    { name: z.string().describe('Nombre del área, ej: "Recámara principal"'), ...areaOptionsSchema },
+    ({ name, floor_id, icon, picture, aliases, labels, temperature_entity_id, humidity_entity_id }) =>
+      ha.createArea(name, { floorId: floor_id, icon, picture, aliases, labels, temperatureEntityId: temperature_entity_id, humidityEntityId: humidity_entity_id })
+  );
+
+  tool(server, 'ha_update_area',
+    'Actualiza un área existente: nombre, piso, icono, imagen, aliases o labels.',
+    {
+      area_id: z.string().describe('ID del área (obtenlo con ha_get_areas)'),
+      name: z.string().optional().describe('Nuevo nombre (opcional)'),
+      ...areaOptionsSchema,
+    },
+    ({ area_id, name, floor_id, icon, picture, aliases, labels, temperature_entity_id, humidity_entity_id }) =>
+      ha.updateArea(area_id, { name, floorId: floor_id, icon, picture, aliases, labels, temperatureEntityId: temperature_entity_id, humidityEntityId: humidity_entity_id })
+  );
+
+  tool(server, 'ha_delete_area',
+    'Elimina un área. Las entidades/dispositivos que la tenían asignada quedan sin área.',
+    { area_id: z.string().describe('ID del área a eliminar') },
+    ({ area_id }) => ha.deleteArea(area_id)
+  );
+
+  tool(server, 'ha_reorder_areas',
+    'Define el orden de despliegue de las áreas en la UI de Home Assistant.',
+    { area_ids: z.array(z.string()).describe('Lista completa de area_ids en el orden deseado') },
+    ({ area_ids }) => ha.reorderAreas(area_ids)
+  );
+
   tool(server, 'ha_get_dashboard',
     'Obtiene la configuración actual del dashboard Lovelace por defecto.',
     {},
@@ -572,6 +612,8 @@ Más completo que ha_get_all_entities para tareas de organización.`,
 - Deshabilitar/habilitar la entidad
 - Cambiar el icono (ej: mdi:lightbulb-outline)
 - Asignar categorías (por scope) y labels
+- Agregar alias (nombres alternativos para voz/búsqueda)
+- Ocultar la entidad de la UI sin deshabilitarla
 
 Funciona igual para automatizaciones y scripts (automation.x, script.x), ya que son
 entidades bajo el mismo registro — así se les asigna categoría/label/área.
@@ -583,19 +625,36 @@ Nota: cambiar el entity_id romperá las automatizaciones que lo referencien — 
       new_entity_id: z.string().optional().describe('Nuevo entity_id (ej: "light.sala_principal")'),
       area_id: z.string().optional().nullable().describe('ID del área a asignar. null para quitar el área.'),
       disabled: z.boolean().optional().describe('true para deshabilitar la entidad, false para habilitarla'),
+      hidden: z.boolean().optional().describe('true para ocultarla de la UI (sigue funcionando), false para mostrarla'),
       icon: z.string().optional().nullable().describe('Icono MDI, ej: "mdi:lightbulb". null para usar el default.'),
       categories: z.record(z.string().nullable()).optional()
         .describe('Categorías por scope, ej: {"automation": "cat_id"}. Usa ha_list_categories para ver los IDs. null en un scope para quitarla.'),
       labels: z.array(z.string()).optional().describe('Lista completa de label_ids a asignar (reemplaza las existentes). Usa ha_list_labels para ver los IDs.'),
+      aliases: z.array(z.string()).optional().describe('Nombres alternativos para búsqueda/voz, ej: ["lámpara del rincón"]'),
     },
-    ({ entity_id, name, new_entity_id, area_id, disabled, icon, categories, labels }) =>
-      ha.updateEntityRegistryEntry(entity_id, { name, newEntityId: new_entity_id, areaId: area_id, disabled, icon, categories, labels })
+    ({ entity_id, name, new_entity_id, area_id, disabled, hidden, icon, categories, labels, aliases }) =>
+      ha.updateEntityRegistryEntry(entity_id, { name, newEntityId: new_entity_id, areaId: area_id, disabled, hidden, icon, categories, labels, aliases })
   );
 
   tool(server, 'ha_list_device_registry',
     'Lista todos los dispositivos físicos con sus entidades, área asignada, fabricante y modelo.',
     {},
     () => ha.listDeviceRegistry()
+  );
+
+  tool(server, 'ha_update_device_registry_entry',
+    `Actualiza un dispositivo físico. Reasignar su área mueve de un solo golpe TODAS sus
+entidades (salvo las que tengan un área propia forzada en su entity registry) —
+la forma más rápida de reorganizar en bloque en vez de mover entidad por entidad.`,
+    {
+      device_id: z.string().describe('ID del dispositivo (obtenlo con ha_list_device_registry)'),
+      area_id: z.string().nullable().optional().describe('Nueva área a asignar. null para quitarla.'),
+      name_by_user: z.string().nullable().optional().describe('Nombre personalizado del dispositivo. null para usar el nombre original.'),
+      disabled: z.boolean().optional().describe('true para deshabilitar el dispositivo (y todas sus entidades), false para habilitarlo'),
+      labels: z.array(z.string()).optional().describe('Lista completa de label_ids a asignar'),
+    },
+    ({ device_id, area_id, name_by_user, disabled, labels }) =>
+      ha.updateDeviceRegistryEntry(device_id, { areaId: area_id, nameByUser: name_by_user, disabled, labels })
   );
 
   tool(server, 'ha_list_helpers',
@@ -907,6 +966,41 @@ repack=true compacta la base de datos SQLite (tarda más pero libera más espaci
     'Lista los pisos/plantas configurados en Home Assistant (requiere HA 2023.9+).',
     {},
     () => ha.listFloors()
+  );
+
+  tool(server, 'ha_create_floor',
+    'Crea un piso/planta (ej: "Planta baja", "Primer piso"). Las áreas se asignan a un piso con ha_create_area/ha_update_area.',
+    {
+      name: z.string().describe('Nombre del piso'),
+      level: z.number().int().optional().describe('Orden vertical, ej: 0 para planta baja, 1 para primer piso (opcional)'),
+      icon: z.string().optional().describe('Icono MDI (opcional)'),
+      aliases: z.array(z.string()).optional().describe('Nombres alternativos (opcional)'),
+    },
+    ({ name, level, icon, aliases }) => ha.createFloor(name, { level, icon, aliases })
+  );
+
+  tool(server, 'ha_update_floor',
+    'Actualiza un piso existente.',
+    {
+      floor_id: z.string().describe('ID del piso (obtenlo con ha_list_floors)'),
+      name: z.string().optional().describe('Nuevo nombre (opcional)'),
+      level: z.number().int().optional().describe('Nuevo orden vertical (opcional)'),
+      icon: z.string().optional().describe('Nuevo icono MDI (opcional)'),
+      aliases: z.array(z.string()).optional().describe('Nuevos nombres alternativos (opcional)'),
+    },
+    ({ floor_id, name, level, icon, aliases }) => ha.updateFloor(floor_id, { name, level, icon, aliases })
+  );
+
+  tool(server, 'ha_delete_floor',
+    'Elimina un piso. Las áreas que lo tenían asignado quedan sin piso.',
+    { floor_id: z.string().describe('ID del piso a eliminar') },
+    ({ floor_id }) => ha.deleteFloor(floor_id)
+  );
+
+  tool(server, 'ha_reorder_floors',
+    'Define el orden de despliegue de los pisos en la UI de Home Assistant.',
+    { floor_ids: z.array(z.string()).describe('Lista completa de floor_ids en el orden deseado') },
+    ({ floor_ids }) => ha.reorderFloors(floor_ids)
   );
 
   tool(server, 'ha_list_labels',
@@ -2199,7 +2293,7 @@ app.use((req, res, next) => {
 });
 
 const JENKINS_TOOLS = 20;
-const HA_TOOLS = 109;
+const HA_TOOLS = 118;
 const PG_TOOLS = 22;
 const DOCKER_TOOLS = 19;
 const SSH_TOOLS = 12;

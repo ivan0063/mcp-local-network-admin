@@ -179,6 +179,49 @@ export class HomeAssistantClient {
   }
 
   /**
+   * Crea un área/habitación nueva.
+   * options: { floorId, icon, picture, aliases, labels, temperatureEntityId, humidityEntityId }
+   */
+  async createArea(name, options = {}) {
+    const { floorId, icon, picture, aliases, labels, temperatureEntityId, humidityEntityId } = options;
+    const payload = { name };
+    if (floorId !== undefined) payload.floor_id = floorId;
+    if (icon !== undefined) payload.icon = icon;
+    if (picture !== undefined) payload.picture = picture;
+    if (aliases !== undefined) payload.aliases = aliases;
+    if (labels !== undefined) payload.labels = labels;
+    if (temperatureEntityId !== undefined) payload.temperature_entity_id = temperatureEntityId;
+    if (humidityEntityId !== undefined) payload.humidity_entity_id = humidityEntityId;
+    return this.ws.command('config/area_registry/create', payload);
+  }
+
+  /** Actualiza un área existente (mismos campos opcionales que createArea). */
+  async updateArea(areaId, options = {}) {
+    const { name, floorId, icon, picture, aliases, labels, temperatureEntityId, humidityEntityId } = options;
+    const payload = { area_id: areaId };
+    if (name !== undefined) payload.name = name;
+    if (floorId !== undefined) payload.floor_id = floorId;
+    if (icon !== undefined) payload.icon = icon;
+    if (picture !== undefined) payload.picture = picture;
+    if (aliases !== undefined) payload.aliases = aliases;
+    if (labels !== undefined) payload.labels = labels;
+    if (temperatureEntityId !== undefined) payload.temperature_entity_id = temperatureEntityId;
+    if (humidityEntityId !== undefined) payload.humidity_entity_id = humidityEntityId;
+    return this.ws.command('config/area_registry/update', payload);
+  }
+
+  /** Elimina un área. Las entidades/dispositivos que la tenían quedan sin área. */
+  async deleteArea(areaId) {
+    await this.ws.command('config/area_registry/delete', { area_id: areaId });
+    return { success: true, deleted: areaId };
+  }
+
+  /** Define el orden de despliegue de las áreas. */
+  async reorderAreas(areaIds) {
+    return this.ws.command('config/area_registry/reorder', { area_ids: areaIds });
+  }
+
+  /**
    * Agrupa las entidades por área, combinando entity_registry (área propia o
    * heredada del dispositivo) con device_registry.
    */
@@ -429,21 +472,37 @@ export class HomeAssistantClient {
    * y asignar categorías/labels. Funciona igual para automatizaciones y scripts, ya que
    * son entidades (automation.x, script.x) bajo el mismo registro.
    */
-  async updateEntityRegistryEntry(entityId, { name, newEntityId, areaId, disabled, icon, categories, labels } = {}) {
+  async updateEntityRegistryEntry(entityId, { name, newEntityId, areaId, disabled, hidden, icon, categories, labels, aliases } = {}) {
     const payload = { entity_id: entityId };
     if (name !== undefined) payload.name = name;
     if (newEntityId !== undefined) payload.new_entity_id = newEntityId;
     if (areaId !== undefined) payload.area_id = areaId;
     if (disabled !== undefined) payload.disabled_by = disabled ? 'user' : null;
+    if (hidden !== undefined) payload.hidden_by = hidden ? 'user' : null;
     if (icon !== undefined) payload.icon = icon;
     if (categories !== undefined) payload.categories = categories;
     if (labels !== undefined) payload.labels = labels;
+    if (aliases !== undefined) payload.aliases = aliases;
     return this.ws.command('config/entity_registry/update', payload);
   }
 
   /** Lista el registro de dispositivos (config/device_registry/list, solo WebSocket). */
   async listDeviceRegistry() {
     return this.ws.command('config/device_registry/list');
+  }
+
+  /**
+   * Actualiza un dispositivo: reasignar área (mueve todas sus entidades de un solo golpe,
+   * salvo las que tengan área propia forzada), renombrar (name_by_user), deshabilitar o
+   * asignar labels.
+   */
+  async updateDeviceRegistryEntry(deviceId, { areaId, nameByUser, disabled, labels } = {}) {
+    const payload = { device_id: deviceId };
+    if (areaId !== undefined) payload.area_id = areaId;
+    if (nameByUser !== undefined) payload.name_by_user = nameByUser;
+    if (disabled !== undefined) payload.disabled_by = disabled ? 'user' : null;
+    if (labels !== undefined) payload.labels = labels;
+    return this.ws.command('config/device_registry/update', payload);
   }
 
   // ─── Helpers ──────────────────────────────────────────────────
@@ -696,6 +755,36 @@ export class HomeAssistantClient {
   /** Lista los pisos/plantas configurados (HA 2023.9+) */
   async listFloors() {
     return this.ws.command('config/floor_registry/list');
+  }
+
+  /** Crea un piso/planta. level: entero para el orden vertical (ej: 0=planta baja, 1=primer piso). */
+  async createFloor(name, { aliases, icon, level } = {}) {
+    const payload = { name };
+    if (aliases !== undefined) payload.aliases = aliases;
+    if (icon !== undefined) payload.icon = icon;
+    if (level !== undefined) payload.level = level;
+    return this.ws.command('config/floor_registry/create', payload);
+  }
+
+  /** Actualiza un piso existente. */
+  async updateFloor(floorId, { name, aliases, icon, level } = {}) {
+    const payload = { floor_id: floorId };
+    if (name !== undefined) payload.name = name;
+    if (aliases !== undefined) payload.aliases = aliases;
+    if (icon !== undefined) payload.icon = icon;
+    if (level !== undefined) payload.level = level;
+    return this.ws.command('config/floor_registry/update', payload);
+  }
+
+  /** Elimina un piso. Las áreas que lo tenían quedan sin piso asignado. */
+  async deleteFloor(floorId) {
+    await this.ws.command('config/floor_registry/delete', { floor_id: floorId });
+    return { success: true, deleted: floorId };
+  }
+
+  /** Define el orden de despliegue de los pisos. */
+  async reorderFloors(floorIds) {
+    return this.ws.command('config/floor_registry/reorder', { floor_ids: floorIds });
   }
 
   /** Lista las etiquetas configuradas (HA 2024.4+) */
