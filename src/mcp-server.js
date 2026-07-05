@@ -347,6 +347,119 @@ Ejemplos:
     () => ha.getPersons()
   );
 
+  tool(server, 'ha_list_persons_config',
+    'Lista la configuración registrada de personas: nombre, user_id vinculado, device_trackers y foto. Complementa ha_get_persons, que solo da el estado.',
+    {},
+    () => ha.listPersonsConfig()
+  );
+
+  tool(server, 'ha_create_person',
+    'Crea una persona nueva en Home Assistant.',
+    {
+      name: z.string().describe('Nombre de la persona'),
+      user_id: z.string().nullable().optional().describe('ID de usuario de HA a vincular (opcional)'),
+      device_trackers: z.array(z.string()).optional().describe('entity_ids de device_tracker para rastrear su presencia (opcional)'),
+      picture: z.string().nullable().optional().describe('URL de foto (opcional)'),
+    },
+    ({ name, user_id, device_trackers, picture }) =>
+      ha.createPerson(name, { userId: user_id, deviceTrackers: device_trackers, picture })
+  );
+
+  tool(server, 'ha_update_person',
+    'Actualiza una persona existente.',
+    {
+      person_id: z.string().describe('ID de la persona (obtenlo con ha_list_persons_config)'),
+      name: z.string().optional().describe('Nuevo nombre (opcional)'),
+      user_id: z.string().nullable().optional().describe('Nuevo user_id vinculado (opcional)'),
+      device_trackers: z.array(z.string()).optional().describe('Nuevos device_trackers (opcional)'),
+      picture: z.string().nullable().optional().describe('Nueva foto (opcional)'),
+    },
+    ({ person_id, name, user_id, device_trackers, picture }) =>
+      ha.updatePersonConfig(person_id, { name, userId: user_id, deviceTrackers: device_trackers, picture })
+  );
+
+  tool(server, 'ha_delete_person',
+    'Elimina una persona de Home Assistant.',
+    { person_id: z.string().describe('ID de la persona a eliminar') },
+    ({ person_id }) => ha.deletePerson(person_id)
+  );
+
+  tool(server, 'ha_list_zones',
+    'Lista las zonas (geofencing) configuradas: casa, trabajo, etc.',
+    {},
+    () => ha.listZones()
+  );
+
+  tool(server, 'ha_create_zone',
+    'Crea una zona (geofencing) nueva.',
+    {
+      name: z.string().describe('Nombre de la zona'),
+      latitude: z.number().describe('Latitud del centro de la zona'),
+      longitude: z.number().describe('Longitud del centro de la zona'),
+      radius: z.number().positive().optional().describe('Radio en metros (opcional, default: 100)'),
+      passive: z.boolean().optional().describe('true para que no dispare notificaciones de entrada/salida (opcional)'),
+      icon: z.string().optional().describe('Icono MDI (opcional)'),
+    },
+    ({ name, latitude, longitude, radius, passive, icon }) =>
+      ha.createZone(name, { latitude, longitude, radius, passive, icon })
+  );
+
+  tool(server, 'ha_update_zone',
+    'Actualiza una zona existente.',
+    {
+      zone_id: z.string().describe('ID de la zona (obtenlo con ha_list_zones)'),
+      name: z.string().optional().describe('Nuevo nombre (opcional)'),
+      latitude: z.number().optional().describe('Nueva latitud (opcional)'),
+      longitude: z.number().optional().describe('Nueva longitud (opcional)'),
+      radius: z.number().positive().optional().describe('Nuevo radio en metros (opcional)'),
+      passive: z.boolean().optional().describe('Nuevo valor de passive (opcional)'),
+      icon: z.string().optional().describe('Nuevo icono MDI (opcional)'),
+    },
+    ({ zone_id, name, latitude, longitude, radius, passive, icon }) =>
+      ha.updateZone(zone_id, { name, latitude, longitude, radius, passive, icon })
+  );
+
+  tool(server, 'ha_delete_zone',
+    'Elimina una zona.',
+    { zone_id: z.string().describe('ID de la zona a eliminar') },
+    ({ zone_id }) => ha.deleteZone(zone_id)
+  );
+
+  tool(server, 'ha_list_tags',
+    'Lista los tags NFC/QR registrados en Home Assistant.',
+    {},
+    () => ha.listTags()
+  );
+
+  tool(server, 'ha_create_tag',
+    'Registra un tag NFC/QR nuevo.',
+    {
+      tag_id: z.string().optional().describe('ID del tag, ej: el UID leído del NFC (opcional, se genera uno si se omite)'),
+      name: z.string().optional().describe('Nombre descriptivo (opcional)'),
+      description: z.string().optional().describe('Descripción (opcional)'),
+      device_id: z.string().optional().describe('ID del dispositivo lector que lo registró (opcional)'),
+    },
+    ({ tag_id, name, description, device_id }) =>
+      ha.createTag({ tagId: tag_id, name, description, deviceId: device_id })
+  );
+
+  tool(server, 'ha_update_tag',
+    'Actualiza un tag existente.',
+    {
+      tag_id: z.string().describe('ID del tag (obtenlo con ha_list_tags)'),
+      name: z.string().optional().describe('Nuevo nombre (opcional)'),
+      description: z.string().optional().describe('Nueva descripción (opcional)'),
+      device_id: z.string().optional().describe('Nuevo device_id (opcional)'),
+    },
+    ({ tag_id, name, description, device_id }) => ha.updateTag(tag_id, { name, description, deviceId: device_id })
+  );
+
+  tool(server, 'ha_delete_tag',
+    'Elimina un tag registrado.',
+    { tag_id: z.string().describe('ID del tag a eliminar') },
+    ({ tag_id }) => ha.deleteTag(tag_id)
+  );
+
   tool(server, 'ha_send_notification',
     'Envía una notificación via un servicio notify.* de Home Assistant.',
     {
@@ -377,6 +490,27 @@ Ejemplos:
     ({ entity_id, hours_ago }) => ha.getEntityHistory(entity_id, hours_ago ?? 24)
   );
 
+  tool(server, 'ha_get_history_during_period',
+    `Historial vía WebSocket para una o más entidades — más flexible que ha_get_entity_history:
+soporta minimal_response (más rápido, sin estados intermedios redundantes), no_attributes
+(ignora atributos, solo estado) y significant_changes_only.`,
+    {
+      entity_ids: z.array(z.string()).describe('IDs de las entidades a consultar'),
+      start_time: z.string().describe('Fecha de inicio en ISO 8601'),
+      end_time: z.string().optional().describe('Fecha de fin en ISO 8601 (opcional, default: ahora)'),
+      include_start_time_state: z.boolean().optional().describe('Incluir el estado justo antes de start_time (default: true)'),
+      significant_changes_only: z.boolean().optional().describe('Solo cambios significativos, ignora ruido (default: true)'),
+      minimal_response: z.boolean().optional().describe('Respuesta más liviana, sin estados intermedios redundantes (default: false)'),
+      no_attributes: z.boolean().optional().describe('Omitir atributos, solo el estado (default: false)'),
+    },
+    ({ entity_ids, start_time, end_time, include_start_time_state, significant_changes_only, minimal_response, no_attributes }) =>
+      ha.getHistoryDuringPeriod({
+        entityIds: entity_ids, startTime: start_time, endTime: end_time,
+        includeStartTimeState: include_start_time_state, significantChangesOnly: significant_changes_only,
+        minimalResponse: minimal_response, noAttributes: no_attributes,
+      })
+  );
+
   tool(server, 'ha_get_logbook',
     'Obtiene la actividad reciente del logbook (qué cambió y cuándo).',
     {
@@ -399,6 +533,37 @@ Ejemplos:
     'Obtiene la configuración global de HA: versión, timezone, unidades, ubicación.',
     {},
     () => ha.getConfig()
+  );
+
+  tool(server, 'ha_update_core_config',
+    'Actualiza la configuración global de la instancia: ubicación, nombre, unidades, moneda, país, idioma, zona horaria, elevación, radio, URLs. Todos los campos son opcionales.',
+    {
+      latitude: z.number().optional().describe('Latitud de la instancia (opcional)'),
+      longitude: z.number().optional().describe('Longitud de la instancia (opcional)'),
+      elevation: z.number().int().optional().describe('Elevación en metros (opcional)'),
+      unit_system: z.enum(['metric', 'us_customary']).optional().describe('Sistema de unidades (opcional)'),
+      location_name: z.string().optional().describe('Nombre de la ubicación/instancia (opcional)'),
+      time_zone: z.string().optional().describe('Zona horaria, ej: "America/Mexico_City" (opcional)'),
+      external_url: z.string().nullable().optional().describe('URL externa de acceso (opcional)'),
+      internal_url: z.string().nullable().optional().describe('URL interna de acceso (opcional)'),
+      currency: z.string().optional().describe('Código de moneda, ej: "MXN" (opcional)'),
+      country: z.string().optional().describe('Código de país, ej: "MX" (opcional)'),
+      language: z.string().optional().describe('Código de idioma, ej: "es" (opcional)'),
+      radius: z.number().int().positive().optional().describe('Radio en metros para la zona "home" (opcional)'),
+      update_units: z.boolean().optional().describe('Convertir automáticamente las unidades existentes al nuevo sistema (opcional)'),
+    },
+    (args) => ha.updateCoreConfig({
+      latitude: args.latitude, longitude: args.longitude, elevation: args.elevation,
+      unitSystem: args.unit_system, locationName: args.location_name, timeZone: args.time_zone,
+      externalUrl: args.external_url, internalUrl: args.internal_url, currency: args.currency,
+      country: args.country, language: args.language, radius: args.radius, updateUnits: args.update_units,
+    })
+  );
+
+  tool(server, 'ha_detect_core_config',
+    'Autodetecta ubicación, zona horaria, moneda, país e idioma según la IP pública del servidor. Útil como base antes de ajustar manualmente con ha_update_core_config.',
+    {},
+    () => ha.detectCoreConfig()
   );
 
   tool(server, 'ha_get_areas',
@@ -448,17 +613,89 @@ Ejemplos:
   );
 
   tool(server, 'ha_get_dashboard',
-    'Obtiene la configuración actual del dashboard Lovelace por defecto.',
-    {},
-    () => ha.getDashboard()
+    'Obtiene la configuración de un dashboard Lovelace. Omitir url_path para el default, o pasar el de uno adicional (ha_list_lovelace_dashboards).',
+    {
+      url_path: z.string().optional().describe('url_path del dashboard (opcional, default: el dashboard por defecto)'),
+    },
+    ({ url_path }) => ha.getDashboard(url_path ?? null)
   );
 
   tool(server, 'ha_save_dashboard',
-    'Guarda/reemplaza el dashboard Lovelace por defecto. Requiere que HA esté en modo storage.',
+    'Guarda/reemplaza un dashboard Lovelace. Requiere que HA esté en modo storage. Omitir url_path para el default.',
     {
       config: z.record(z.unknown()).describe('Configuración Lovelace completa en formato JSON'),
+      url_path: z.string().optional().describe('url_path del dashboard a guardar (opcional, default: el dashboard por defecto)'),
     },
-    ({ config }) => ha.saveDashboard(config)
+    ({ config, url_path }) => ha.saveDashboard(config, url_path ?? null)
+  );
+
+  tool(server, 'ha_list_lovelace_dashboards',
+    'Lista los dashboards Lovelace adicionales (además del default), con su url_path, título y visibilidad en el sidebar.',
+    {},
+    () => ha.listLovelaceDashboards()
+  );
+
+  tool(server, 'ha_create_lovelace_dashboard_entry',
+    'Crea un dashboard Lovelace nuevo (aparece en el sidebar). Usa ha_save_dashboard con su url_path para definir su contenido.',
+    {
+      url_path: z.string().describe('Identificador único en la URL, ej: "energia" (sin espacios ni mayúsculas)'),
+      title: z.string().describe('Título visible en el sidebar'),
+      icon: z.string().optional().describe('Icono MDI (opcional)'),
+      require_admin: z.boolean().optional().describe('true para que solo lo vean admins (opcional)'),
+      show_in_sidebar: z.boolean().optional().describe('false para ocultarlo del sidebar (opcional, default: true)'),
+    },
+    ({ url_path, title, icon, require_admin, show_in_sidebar }) =>
+      ha.createLovelaceDashboardEntry(url_path, title, { icon, requireAdmin: require_admin, showInSidebar: show_in_sidebar })
+  );
+
+  tool(server, 'ha_update_lovelace_dashboard_entry',
+    'Actualiza título/icono/visibilidad de un dashboard adicional (no su contenido — para eso usa ha_save_dashboard).',
+    {
+      dashboard_id: z.string().describe('ID del dashboard (obtenlo con ha_list_lovelace_dashboards)'),
+      title: z.string().optional().describe('Nuevo título (opcional)'),
+      icon: z.string().optional().describe('Nuevo icono MDI (opcional)'),
+      require_admin: z.boolean().optional().describe('Restringir a admins (opcional)'),
+      show_in_sidebar: z.boolean().optional().describe('Mostrar/ocultar del sidebar (opcional)'),
+    },
+    ({ dashboard_id, title, icon, require_admin, show_in_sidebar }) =>
+      ha.updateLovelaceDashboardEntry(dashboard_id, { title, icon, requireAdmin: require_admin, showInSidebar: show_in_sidebar })
+  );
+
+  tool(server, 'ha_delete_lovelace_dashboard_entry',
+    'Elimina un dashboard adicional. No afecta al dashboard por defecto.',
+    { dashboard_id: z.string().describe('ID del dashboard a eliminar') },
+    ({ dashboard_id }) => ha.deleteLovelaceDashboardEntry(dashboard_id)
+  );
+
+  tool(server, 'ha_list_lovelace_resources',
+    'Lista los recursos personalizados (custom cards de HACS, etc.) registrados en Lovelace.',
+    {},
+    () => ha.listLovelaceResources()
+  );
+
+  tool(server, 'ha_create_lovelace_resource',
+    'Registra un recurso Lovelace (custom card), necesario antes de poder usarlo en un dashboard.',
+    {
+      url: z.string().describe('URL del recurso, ej: "/hacsfiles/mini-graph-card/mini-graph-card.js"'),
+      resource_type: z.enum(['js', 'css', 'module', 'html']).describe('Tipo de recurso'),
+    },
+    ({ url, resource_type }) => ha.createLovelaceResource(url, resource_type)
+  );
+
+  tool(server, 'ha_update_lovelace_resource',
+    'Actualiza la URL o el tipo de un recurso Lovelace existente.',
+    {
+      resource_id: z.string().describe('ID del recurso (obtenlo con ha_list_lovelace_resources)'),
+      url: z.string().optional().describe('Nueva URL (opcional)'),
+      resource_type: z.enum(['js', 'css', 'module', 'html']).optional().describe('Nuevo tipo (opcional)'),
+    },
+    ({ resource_id, url, resource_type }) => ha.updateLovelaceResource(resource_id, { url, resourceType: resource_type })
+  );
+
+  tool(server, 'ha_delete_lovelace_resource',
+    'Elimina un recurso Lovelace registrado.',
+    { resource_id: z.string().describe('ID del recurso a eliminar') },
+    ({ resource_id }) => ha.deleteLovelaceResource(resource_id)
   );
 
   tool(server, 'ha_create_lovelace_dashboard',
@@ -636,6 +873,12 @@ Nota: cambiar el entity_id romperá las automatizaciones que lo referencien — 
       ha.updateEntityRegistryEntry(entity_id, { name, newEntityId: new_entity_id, areaId: area_id, disabled, hidden, icon, categories, labels, aliases })
   );
 
+  tool(server, 'ha_remove_entity_registry_entry',
+    'Elimina PERMANENTEMENTE una entidad huérfana del registro (distinto de deshabilitarla). Solo funciona con entidades que ya no están disponibles. Confirma con el usuario antes de llamar esta tool.',
+    { entity_id: z.string().describe('ID de la entidad a eliminar del registro') },
+    ({ entity_id }) => ha.removeEntityRegistryEntry(entity_id)
+  );
+
   tool(server, 'ha_list_device_registry',
     'Lista todos los dispositivos físicos con sus entidades, área asignada, fabricante y modelo.',
     {},
@@ -655,6 +898,15 @@ la forma más rápida de reorganizar en bloque en vez de mover entidad por entid
     },
     ({ device_id, area_id, name_by_user, disabled, labels }) =>
       ha.updateDeviceRegistryEntry(device_id, { areaId: area_id, nameByUser: name_by_user, disabled, labels })
+  );
+
+  tool(server, 'ha_remove_config_entry_from_device',
+    'Desvincula una integración de un dispositivo con varias integraciones. Si era la única, el dispositivo desaparece del registro.',
+    {
+      device_id: z.string().describe('ID del dispositivo (obtenlo con ha_list_device_registry)'),
+      config_entry_id: z.string().describe('ID de la config entry a desvincular (obtenlo con ha_list_integrations)'),
+    },
+    ({ device_id, config_entry_id }) => ha.removeConfigEntryFromDevice(device_id, config_entry_id)
   );
 
   tool(server, 'ha_list_helpers',
@@ -949,6 +1201,13 @@ ADVERTENCIA: Esta operación reinicia Home Assistant. La conectividad se perder�
 El log contiene entradas de nivel WARNING y ERROR del proceso de HA.`,
     {},
     () => ha.getErrorLog()
+  );
+
+  tool(server, 'ha_list_system_log',
+    `Log de sistema estructurado (nivel, timestamp, fuente, traceback) — más útil para
+procesar que ha_get_error_log. Para limpiarlo usa ha_call_service con domain="system_log", service="clear".`,
+    {},
+    () => ha.listSystemLog()
   );
 
   tool(server, 'ha_purge_history',
@@ -1300,6 +1559,54 @@ Devuelve el primer paso (formulario/schema) — continúalo con ha_advance_confi
       user_input: z.record(z.unknown()).describe('Datos del paso actual, según el schema devuelto por el paso anterior'),
     },
     ({ flow_id, user_input }) => ha.advanceConfigFlow(flow_id, user_input)
+  );
+
+  tool(server, 'ha_start_options_flow',
+    `Inicia el flujo de OPCIONES de una integración ya instalada (reconfigurar su comportamiento,
+no reinstalarla). Devuelve el primer paso — continúalo con ha_advance_options_flow.`,
+    { entry_id: z.string().describe('ID de la config entry a reconfigurar (obtenlo con ha_list_integrations)') },
+    ({ entry_id }) => ha.startOptionsFlow(entry_id)
+  );
+
+  tool(server, 'ha_get_options_flow_step',
+    'Obtiene el paso actual de un flujo de opciones en curso.',
+    { flow_id: z.string().describe('ID del flujo (obtenlo de ha_start_options_flow)') },
+    ({ flow_id }) => ha.getOptionsFlowStep(flow_id)
+  );
+
+  tool(server, 'ha_advance_options_flow',
+    'Envía los datos de un paso del flujo de opciones y avanza al siguiente.',
+    {
+      flow_id: z.string().describe('ID del flujo en curso'),
+      user_input: z.record(z.unknown()).describe('Datos del paso actual, según el schema devuelto por el paso anterior'),
+    },
+    ({ flow_id, user_input }) => ha.advanceOptionsFlow(flow_id, user_input)
+  );
+
+  tool(server, 'ha_start_subentry_flow',
+    `Inicia un flujo de SUBENTRY: agrega un sub-elemento a una integración/hub ya instalado
+(ej: emparejar un dispositivo Zigbee/Z-Wave nuevo a su coordinador, o agregar una cuenta
+a una integración multi-cuenta). Devuelve el primer paso — continúalo con ha_advance_subentry_flow.`,
+    {
+      entry_id: z.string().describe('ID de la config entry del hub/integración (obtenlo con ha_list_integrations)'),
+      subentry_type: z.string().describe('Tipo de subentry que soporta la integración (varía por integración)'),
+    },
+    ({ entry_id, subentry_type }) => ha.startSubentryFlow(entry_id, subentry_type)
+  );
+
+  tool(server, 'ha_get_subentry_flow_step',
+    'Obtiene el paso actual de un flujo de subentry en curso.',
+    { flow_id: z.string().describe('ID del flujo (obtenlo de ha_start_subentry_flow)') },
+    ({ flow_id }) => ha.getSubentryFlowStep(flow_id)
+  );
+
+  tool(server, 'ha_advance_subentry_flow',
+    'Envía los datos de un paso del flujo de subentry y avanza al siguiente.',
+    {
+      flow_id: z.string().describe('ID del flujo en curso'),
+      user_input: z.record(z.unknown()).describe('Datos del paso actual, según el schema devuelto por el paso anterior'),
+    },
+    ({ flow_id, user_input }) => ha.advanceSubentryFlow(flow_id, user_input)
   );
 
   tool(server, 'ha_get_network_adapters',
@@ -2293,7 +2600,7 @@ app.use((req, res, next) => {
 });
 
 const JENKINS_TOOLS = 20;
-const HA_TOOLS = 118;
+const HA_TOOLS = 150;
 const PG_TOOLS = 22;
 const DOCKER_TOOLS = 19;
 const SSH_TOOLS = 12;
