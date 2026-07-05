@@ -44,6 +44,37 @@ export class HomeAssistantClient {
     return res.json();
   }
 
+  /**
+   * Actualiza la configuración global de la instancia: ubicación, nombre, unidades,
+   * moneda, país, idioma, zona horaria, elevación, radio, URLs internas/externas.
+   * Todos los campos son opcionales — solo se actualizan los que se pasen.
+   */
+  async updateCoreConfig({
+    latitude, longitude, elevation, unitSystem, locationName, timeZone,
+    externalUrl, internalUrl, currency, country, language, radius, updateUnits,
+  } = {}) {
+    const payload = {};
+    if (latitude !== undefined) payload.latitude = latitude;
+    if (longitude !== undefined) payload.longitude = longitude;
+    if (elevation !== undefined) payload.elevation = elevation;
+    if (unitSystem !== undefined) payload.unit_system = unitSystem;
+    if (locationName !== undefined) payload.location_name = locationName;
+    if (timeZone !== undefined) payload.time_zone = timeZone;
+    if (externalUrl !== undefined) payload.external_url = externalUrl;
+    if (internalUrl !== undefined) payload.internal_url = internalUrl;
+    if (currency !== undefined) payload.currency = currency;
+    if (country !== undefined) payload.country = country;
+    if (language !== undefined) payload.language = language;
+    if (radius !== undefined) payload.radius = radius;
+    if (updateUnits !== undefined) payload.update_units = updateUnits;
+    return this.ws.command('config/core/update', payload);
+  }
+
+  /** Autodetecta ubicación, zona horaria, moneda, país e idioma según la IP del servidor. */
+  async detectCoreConfig() {
+    return this.ws.command('config/core/detect');
+  }
+
   // ─── Entidades y estados ──────────────────────────────────────
 
   /**
@@ -148,6 +179,102 @@ export class HomeAssistantClient {
     return this.getEntitiesByDomain('person');
   }
 
+  /** Lista la configuración registrada de personas (nombre, user_id, device_trackers, foto). */
+  async listPersonsConfig() {
+    return this.ws.command('person/list');
+  }
+
+  /** Crea una persona nueva. deviceTrackers: entity_ids de device_tracker asociados. */
+  async createPerson(name, { userId, deviceTrackers, picture } = {}) {
+    const payload = { name };
+    if (userId !== undefined) payload.user_id = userId;
+    if (deviceTrackers !== undefined) payload.device_trackers = deviceTrackers;
+    if (picture !== undefined) payload.picture = picture;
+    return this.ws.command('person/create', payload);
+  }
+
+  /** Actualiza una persona existente. */
+  async updatePersonConfig(personId, { name, userId, deviceTrackers, picture } = {}) {
+    const payload = { person_id: personId };
+    if (name !== undefined) payload.name = name;
+    if (userId !== undefined) payload.user_id = userId;
+    if (deviceTrackers !== undefined) payload.device_trackers = deviceTrackers;
+    if (picture !== undefined) payload.picture = picture;
+    return this.ws.command('person/update', payload);
+  }
+
+  /** Elimina una persona. */
+  async deletePerson(personId) {
+    await this.ws.command('person/delete', { person_id: personId });
+    return { success: true, deleted: personId };
+  }
+
+  // ─── Zonas (geofencing) ─────────────────────────────────────────
+
+  /** Lista las zonas configuradas (casa, trabajo, etc.). */
+  async listZones() {
+    return this.ws.command('zone/list');
+  }
+
+  /** Crea una zona. radius en metros (default 100). passive: true para no disparar notificaciones de entrada/salida. */
+  async createZone(name, { latitude, longitude, radius, passive, icon } = {}) {
+    const payload = { name, latitude, longitude };
+    if (radius !== undefined) payload.radius = radius;
+    if (passive !== undefined) payload.passive = passive;
+    if (icon !== undefined) payload.icon = icon;
+    return this.ws.command('zone/create', payload);
+  }
+
+  /** Actualiza una zona existente. */
+  async updateZone(zoneId, { name, latitude, longitude, radius, passive, icon } = {}) {
+    const payload = { zone_id: zoneId };
+    if (name !== undefined) payload.name = name;
+    if (latitude !== undefined) payload.latitude = latitude;
+    if (longitude !== undefined) payload.longitude = longitude;
+    if (radius !== undefined) payload.radius = radius;
+    if (passive !== undefined) payload.passive = passive;
+    if (icon !== undefined) payload.icon = icon;
+    return this.ws.command('zone/update', payload);
+  }
+
+  /** Elimina una zona. */
+  async deleteZone(zoneId) {
+    await this.ws.command('zone/delete', { zone_id: zoneId });
+    return { success: true, deleted: zoneId };
+  }
+
+  // ─── Tags NFC/QR ──────────────────────────────────────────────
+
+  /** Lista los tags NFC/QR registrados. */
+  async listTags() {
+    return this.ws.command('tag/list');
+  }
+
+  /** Registra un tag. tagId es opcional (se genera uno si se omite). */
+  async createTag({ tagId, name, description, deviceId } = {}) {
+    const payload = {};
+    if (tagId !== undefined) payload.tag_id = tagId;
+    if (name !== undefined) payload.name = name;
+    if (description !== undefined) payload.description = description;
+    if (deviceId !== undefined) payload.device_id = deviceId;
+    return this.ws.command('tag/create', payload);
+  }
+
+  /** Actualiza un tag existente. */
+  async updateTag(tagId, { name, description, deviceId } = {}) {
+    const payload = { tag_id: tagId };
+    if (name !== undefined) payload.name = name;
+    if (description !== undefined) payload.description = description;
+    if (deviceId !== undefined) payload.device_id = deviceId;
+    return this.ws.command('tag/update', payload);
+  }
+
+  /** Elimina un tag. */
+  async deleteTag(tagId) {
+    await this.ws.command('tag/delete', { tag_id: tagId });
+    return { success: true, deleted: tagId };
+  }
+
   // ─── Media players ────────────────────────────────────────────
 
   /**
@@ -176,6 +303,49 @@ export class HomeAssistantClient {
    */
   async getAreaRegistry() {
     return this.ws.command('config/area_registry/list');
+  }
+
+  /**
+   * Crea un área/habitación nueva.
+   * options: { floorId, icon, picture, aliases, labels, temperatureEntityId, humidityEntityId }
+   */
+  async createArea(name, options = {}) {
+    const { floorId, icon, picture, aliases, labels, temperatureEntityId, humidityEntityId } = options;
+    const payload = { name };
+    if (floorId !== undefined) payload.floor_id = floorId;
+    if (icon !== undefined) payload.icon = icon;
+    if (picture !== undefined) payload.picture = picture;
+    if (aliases !== undefined) payload.aliases = aliases;
+    if (labels !== undefined) payload.labels = labels;
+    if (temperatureEntityId !== undefined) payload.temperature_entity_id = temperatureEntityId;
+    if (humidityEntityId !== undefined) payload.humidity_entity_id = humidityEntityId;
+    return this.ws.command('config/area_registry/create', payload);
+  }
+
+  /** Actualiza un área existente (mismos campos opcionales que createArea). */
+  async updateArea(areaId, options = {}) {
+    const { name, floorId, icon, picture, aliases, labels, temperatureEntityId, humidityEntityId } = options;
+    const payload = { area_id: areaId };
+    if (name !== undefined) payload.name = name;
+    if (floorId !== undefined) payload.floor_id = floorId;
+    if (icon !== undefined) payload.icon = icon;
+    if (picture !== undefined) payload.picture = picture;
+    if (aliases !== undefined) payload.aliases = aliases;
+    if (labels !== undefined) payload.labels = labels;
+    if (temperatureEntityId !== undefined) payload.temperature_entity_id = temperatureEntityId;
+    if (humidityEntityId !== undefined) payload.humidity_entity_id = humidityEntityId;
+    return this.ws.command('config/area_registry/update', payload);
+  }
+
+  /** Elimina un área. Las entidades/dispositivos que la tenían quedan sin área. */
+  async deleteArea(areaId) {
+    await this.ws.command('config/area_registry/delete', { area_id: areaId });
+    return { success: true, deleted: areaId };
+  }
+
+  /** Define el orden de despliegue de las áreas. */
+  async reorderAreas(areaIds) {
+    return this.ws.command('config/area_registry/reorder', { area_ids: areaIds });
   }
 
   /**
@@ -221,6 +391,22 @@ export class HomeAssistantClient {
     return data[0] || [];
   }
 
+  /**
+   * Historial vía WebSocket para una o más entidades — más flexible que getEntityHistory:
+   * permite minimal_response (más rápido), no_attributes, y significant_changes_only.
+   */
+  async getHistoryDuringPeriod({
+    entityIds, startTime, endTime, includeStartTimeState, significantChangesOnly, minimalResponse, noAttributes,
+  }) {
+    const payload = { entity_ids: entityIds, start_time: startTime };
+    if (endTime !== undefined) payload.end_time = endTime;
+    if (includeStartTimeState !== undefined) payload.include_start_time_state = includeStartTimeState;
+    if (significantChangesOnly !== undefined) payload.significant_changes_only = significantChangesOnly;
+    if (minimalResponse !== undefined) payload.minimal_response = minimalResponse;
+    if (noAttributes !== undefined) payload.no_attributes = noAttributes;
+    return this.ws.command('history/history_during_period', payload);
+  }
+
   /** Actividad reciente del logbook (últimas N horas, opcionalmente filtrada por entidad) */
   async getLogbook(hoursAgo = 24, entityId = null) {
     const start = new Date(Date.now() - hoursAgo * 3600 * 1000);
@@ -240,24 +426,84 @@ export class HomeAssistantClient {
 
   // ─── Dashboards Lovelace ──────────────────────────────────────
 
-  /** Obtiene la configuración actual del dashboard Lovelace por defecto (solo WebSocket). */
-  async getDashboard() {
-    return this.ws.command('lovelace/config', { url_path: null });
+  /**
+   * Obtiene la configuración de un dashboard Lovelace (solo WebSocket).
+   * Omitir urlPath para el dashboard por defecto, o pasar el url_path de uno
+   * adicional (obtenlo con listLovelaceDashboards).
+   */
+  async getDashboard(urlPath = null) {
+    return this.ws.command('lovelace/config', { url_path: urlPath });
   }
 
   /**
-   * Guarda/reemplaza el dashboard Lovelace por defecto (solo WebSocket).
-   * Nota: solo afecta el dashboard por defecto. Requiere modo storage en HA.
+   * Guarda/reemplaza un dashboard Lovelace (solo WebSocket). Requiere modo storage en HA.
+   * Omitir urlPath para el dashboard por defecto.
    */
-  async saveDashboard(config) {
-    return this.ws.command('lovelace/config/save', { url_path: null, config });
+  async saveDashboard(config, urlPath = null) {
+    return this.ws.command('lovelace/config/save', { url_path: urlPath, config });
+  }
+
+  /** Lista los dashboards Lovelace adicionales (además del default). */
+  async listLovelaceDashboards() {
+    return this.ws.command('lovelace/dashboards/list');
+  }
+
+  /** Crea un dashboard Lovelace nuevo (aparece en el sidebar). */
+  async createLovelaceDashboardEntry(urlPath, title, { icon, requireAdmin, showInSidebar } = {}) {
+    const payload = { url_path: urlPath, title };
+    if (icon !== undefined) payload.icon = icon;
+    if (requireAdmin !== undefined) payload.require_admin = requireAdmin;
+    if (showInSidebar !== undefined) payload.show_in_sidebar = showInSidebar;
+    return this.ws.command('lovelace/dashboards/create', payload);
+  }
+
+  /** Actualiza título/icono/visibilidad de un dashboard adicional. */
+  async updateLovelaceDashboardEntry(dashboardId, { title, icon, requireAdmin, showInSidebar } = {}) {
+    const payload = { dashboard_id: dashboardId };
+    if (title !== undefined) payload.title = title;
+    if (icon !== undefined) payload.icon = icon;
+    if (requireAdmin !== undefined) payload.require_admin = requireAdmin;
+    if (showInSidebar !== undefined) payload.show_in_sidebar = showInSidebar;
+    return this.ws.command('lovelace/dashboards/update', payload);
+  }
+
+  /** Elimina un dashboard adicional (no afecta al default). */
+  async deleteLovelaceDashboardEntry(dashboardId) {
+    await this.ws.command('lovelace/dashboards/delete', { dashboard_id: dashboardId });
+    return { success: true, deleted: dashboardId };
+  }
+
+  /** Lista los recursos personalizados (custom cards) registrados en Lovelace. */
+  async listLovelaceResources() {
+    return this.ws.command('lovelace/resources/list');
+  }
+
+  /** Registra un recurso Lovelace (custom card). resourceType: 'js' | 'css' | 'module' | 'html' */
+  async createLovelaceResource(url, resourceType) {
+    return this.ws.command('lovelace/resources/create', { url, res_type: resourceType });
+  }
+
+  /** Actualiza un recurso Lovelace existente. */
+  async updateLovelaceResource(resourceId, { url, resourceType } = {}) {
+    const payload = { resource_id: resourceId };
+    if (url !== undefined) payload.url = url;
+    if (resourceType !== undefined) payload.res_type = resourceType;
+    return this.ws.command('lovelace/resources/update', payload);
+  }
+
+  /** Elimina un recurso Lovelace. */
+  async deleteLovelaceResource(resourceId) {
+    await this.ws.command('lovelace/resources/delete', { resource_id: resourceId });
+    return { success: true, deleted: resourceId };
   }
 
   /**
    * Genera y guarda un dashboard Lovelace completo.
    * type: 'rooms' | 'energy' | 'homekit' | 'automations'
+   * Omitir urlPath para escribirlo en el dashboard por defecto, o pasar el url_path
+   * de un dashboard creado con createLovelaceDashboardEntry para escribirlo ahí.
    */
-  async createLovelaceDashboard(type) {
+  async createLovelaceDashboard(type, urlPath = null) {
     let config;
 
     switch (type) {
@@ -288,8 +534,8 @@ export class HomeAssistantClient {
         throw new Error(`Tipo desconocido: '${type}'. Usa: rooms, energy, homekit, automations`);
     }
 
-    await this.saveDashboard(config);
-    return { success: true, type, config };
+    await this.saveDashboard(config, urlPath);
+    return { success: true, type, url_path: urlPath, config };
   }
 
   // ─── HomeKit ──────────────────────────────────────────────────
@@ -425,21 +671,61 @@ export class HomeAssistantClient {
 
   /**
    * Actualiza la entrada del registro de una entidad.
-   * Permite renombrar, reasignar área, cambiar entity_id, deshabilitar y cambiar icono.
+   * Permite renombrar, reasignar área, cambiar entity_id, deshabilitar, cambiar icono,
+   * y asignar categorías/labels. Funciona igual para automatizaciones y scripts, ya que
+   * son entidades (automation.x, script.x) bajo el mismo registro.
    */
-  async updateEntityRegistryEntry(entityId, { name, newEntityId, areaId, disabled, icon } = {}) {
+  async updateEntityRegistryEntry(entityId, { name, newEntityId, areaId, disabled, hidden, icon, categories, labels, aliases } = {}) {
     const payload = { entity_id: entityId };
     if (name !== undefined) payload.name = name;
     if (newEntityId !== undefined) payload.new_entity_id = newEntityId;
     if (areaId !== undefined) payload.area_id = areaId;
     if (disabled !== undefined) payload.disabled_by = disabled ? 'user' : null;
+    if (hidden !== undefined) payload.hidden_by = hidden ? 'user' : null;
     if (icon !== undefined) payload.icon = icon;
+    if (categories !== undefined) payload.categories = categories;
+    if (labels !== undefined) payload.labels = labels;
+    if (aliases !== undefined) payload.aliases = aliases;
     return this.ws.command('config/entity_registry/update', payload);
+  }
+
+  /**
+   * Elimina permanentemente una entidad huérfana del registro (distinto de deshabilitarla).
+   * Solo funciona con entidades que ya no están disponibles/proporcionadas por una integración activa.
+   */
+  async removeEntityRegistryEntry(entityId) {
+    await this.ws.command('config/entity_registry/remove', { entity_id: entityId });
+    return { success: true, deleted: entityId };
   }
 
   /** Lista el registro de dispositivos (config/device_registry/list, solo WebSocket). */
   async listDeviceRegistry() {
     return this.ws.command('config/device_registry/list');
+  }
+
+  /**
+   * Actualiza un dispositivo: reasignar área (mueve todas sus entidades de un solo golpe,
+   * salvo las que tengan área propia forzada), renombrar (name_by_user), deshabilitar o
+   * asignar labels.
+   */
+  async updateDeviceRegistryEntry(deviceId, { areaId, nameByUser, disabled, labels } = {}) {
+    const payload = { device_id: deviceId };
+    if (areaId !== undefined) payload.area_id = areaId;
+    if (nameByUser !== undefined) payload.name_by_user = nameByUser;
+    if (disabled !== undefined) payload.disabled_by = disabled ? 'user' : null;
+    if (labels !== undefined) payload.labels = labels;
+    return this.ws.command('config/device_registry/update', payload);
+  }
+
+  /**
+   * Desvincula una integración (config entry) de un dispositivo con varias integraciones.
+   * Si era su única integración, el dispositivo desaparece del registro.
+   */
+  async removeConfigEntryFromDevice(deviceId, configEntryId) {
+    return this.ws.command('config/device_registry/remove_config_entry', {
+      device_id: deviceId,
+      config_entry_id: configEntryId,
+    });
   }
 
   // ─── Helpers ──────────────────────────────────────────────────
@@ -694,9 +980,68 @@ export class HomeAssistantClient {
     return this.ws.command('config/floor_registry/list');
   }
 
+  /** Crea un piso/planta. level: entero para el orden vertical (ej: 0=planta baja, 1=primer piso). */
+  async createFloor(name, { aliases, icon, level } = {}) {
+    const payload = { name };
+    if (aliases !== undefined) payload.aliases = aliases;
+    if (icon !== undefined) payload.icon = icon;
+    if (level !== undefined) payload.level = level;
+    return this.ws.command('config/floor_registry/create', payload);
+  }
+
+  /** Actualiza un piso existente. */
+  async updateFloor(floorId, { name, aliases, icon, level } = {}) {
+    const payload = { floor_id: floorId };
+    if (name !== undefined) payload.name = name;
+    if (aliases !== undefined) payload.aliases = aliases;
+    if (icon !== undefined) payload.icon = icon;
+    if (level !== undefined) payload.level = level;
+    return this.ws.command('config/floor_registry/update', payload);
+  }
+
+  /** Elimina un piso. Las áreas que lo tenían quedan sin piso asignado. */
+  async deleteFloor(floorId) {
+    await this.ws.command('config/floor_registry/delete', { floor_id: floorId });
+    return { success: true, deleted: floorId };
+  }
+
+  /** Define el orden de despliegue de los pisos. */
+  async reorderFloors(floorIds) {
+    return this.ws.command('config/floor_registry/reorder', { floor_ids: floorIds });
+  }
+
   /** Lista las etiquetas configuradas (HA 2024.4+) */
   async listLabels() {
     return this.ws.command('config/label_registry/list');
+  }
+
+  /**
+   * Crea una etiqueta (label). Las labels son globales (no tienen scope, a diferencia
+   * de las categorías) y se pueden asignar a cualquier entidad, área o dispositivo.
+   * color: nombre de color de Material Design, ej: "blue", "red", "green" (opcional)
+   */
+  async createLabel(name, { color, description, icon } = {}) {
+    const payload = { name };
+    if (color !== undefined) payload.color = color;
+    if (description !== undefined) payload.description = description;
+    if (icon !== undefined) payload.icon = icon;
+    return this.ws.command('config/label_registry/create', payload);
+  }
+
+  /** Actualiza nombre/color/descripción/icono de una etiqueta existente. */
+  async updateLabel(labelId, { name, color, description, icon } = {}) {
+    const payload = { label_id: labelId };
+    if (name !== undefined) payload.name = name;
+    if (color !== undefined) payload.color = color;
+    if (description !== undefined) payload.description = description;
+    if (icon !== undefined) payload.icon = icon;
+    return this.ws.command('config/label_registry/update', payload);
+  }
+
+  /** Elimina una etiqueta. Se desasigna automáticamente de todo lo que la tuviera. */
+  async deleteLabel(labelId) {
+    await this.ws.command('config/label_registry/delete', { label_id: labelId });
+    return { success: true, deleted: labelId };
   }
 
   // ─── Intent ───────────────────────────────────────────────────
@@ -716,6 +1061,15 @@ export class HomeAssistantClient {
   async getErrorLog() {
     const res = await this.request('/error_log');
     return res.text();
+  }
+
+  /**
+   * Log de sistema estructurado (uno por entrada, con nivel, timestamp, fuente y traceback),
+   * más útil para procesar que getErrorLog (texto plano). Para limpiarlo, usa
+   * ha_call_service con domain="system_log", service="clear".
+   */
+  async listSystemLog() {
+    return this.ws.command('system_log/list');
   }
 
   // ─── Backups (restore y parcial) ──────────────────────────────
@@ -994,6 +1348,62 @@ export class HomeAssistantClient {
   /** Envía los datos de un paso del flujo de configuración y avanza al siguiente. */
   async advanceConfigFlow(flowId, userInput) {
     const res = await this.request(`/config/config_entries/flow/${flowId}`, {
+      method: 'POST',
+      body: JSON.stringify(userInput),
+    });
+    return res.json();
+  }
+
+  /**
+   * Inicia el flujo de OPCIONES de una config entry ya instalada (reconfigurar,
+   * no volver a instalar). Devuelve el primer paso — continúalo con ha_advance_options_flow.
+   */
+  async startOptionsFlow(entryId) {
+    const res = await this.request('/config/config_entries/options/flow', {
+      method: 'POST',
+      body: JSON.stringify({ handler: entryId }),
+    });
+    return res.json();
+  }
+
+  /** Obtiene el paso actual de un flujo de opciones en curso. */
+  async getOptionsFlowStep(flowId) {
+    const res = await this.request(`/config/config_entries/options/flow/${flowId}`);
+    return res.json();
+  }
+
+  /** Envía los datos de un paso del flujo de opciones y avanza al siguiente. */
+  async advanceOptionsFlow(flowId, userInput) {
+    const res = await this.request(`/config/config_entries/options/flow/${flowId}`, {
+      method: 'POST',
+      body: JSON.stringify(userInput),
+    });
+    return res.json();
+  }
+
+  /**
+   * Inicia un flujo de SUBENTRY: agrega un sub-elemento a una integración/hub ya instalado
+   * (ej: emparejar un dispositivo Zigbee/Z-Wave nuevo a su coordinador, o agregar una
+   * cuenta a una integración multi-cuenta). subentryType depende de la integración —
+   * consulta su documentación o intenta con "" para ver el error con los tipos válidos.
+   */
+  async startSubentryFlow(entryId, subentryType) {
+    const res = await this.request('/config/config_entries/subentries/flow', {
+      method: 'POST',
+      body: JSON.stringify({ handler: [entryId, subentryType] }),
+    });
+    return res.json();
+  }
+
+  /** Obtiene el paso actual de un flujo de subentry en curso. */
+  async getSubentryFlowStep(flowId) {
+    const res = await this.request(`/config/config_entries/subentries/flow/${flowId}`);
+    return res.json();
+  }
+
+  /** Envía los datos de un paso del flujo de subentry y avanza al siguiente. */
+  async advanceSubentryFlow(flowId, userInput) {
+    const res = await this.request(`/config/config_entries/subentries/flow/${flowId}`, {
       method: 'POST',
       body: JSON.stringify(userInput),
     });
