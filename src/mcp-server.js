@@ -704,11 +704,15 @@ Tipos disponibles:
 - rooms: control por habitación, agrupado por áreas
 - energy: sensores de energía y potencia con gráficas
 - homekit: entidades compatibles con Apple HomeKit organizadas por tipo
-- automations: panel de control de automatizaciones con toggles`,
+- automations: panel de control de automatizaciones con toggles
+
+Por default escribe en el dashboard por defecto. Para generarlo en un dashboard nuevo,
+primero créalo con ha_create_lovelace_dashboard_entry y pasa su url_path aquí.`,
     {
       type: z.enum(['rooms', 'energy', 'homekit', 'automations']).describe('Tipo de dashboard a generar'),
+      url_path: z.string().optional().describe('url_path de un dashboard adicional donde escribirlo (opcional, default: el dashboard por defecto)'),
     },
-    ({ type }) => ha.createLovelaceDashboard(type)
+    ({ type, url_path }) => ha.createLovelaceDashboard(type, url_path ?? null)
   );
 
   tool(server, 'ha_get_homekit_entities',

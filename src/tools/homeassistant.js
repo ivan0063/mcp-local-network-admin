@@ -500,8 +500,10 @@ export class HomeAssistantClient {
   /**
    * Genera y guarda un dashboard Lovelace completo.
    * type: 'rooms' | 'energy' | 'homekit' | 'automations'
+   * Omitir urlPath para escribirlo en el dashboard por defecto, o pasar el url_path
+   * de un dashboard creado con createLovelaceDashboardEntry para escribirlo ahí.
    */
-  async createLovelaceDashboard(type) {
+  async createLovelaceDashboard(type, urlPath = null) {
     let config;
 
     switch (type) {
@@ -532,8 +534,8 @@ export class HomeAssistantClient {
         throw new Error(`Tipo desconocido: '${type}'. Usa: rooms, energy, homekit, automations`);
     }
 
-    await this.saveDashboard(config);
-    return { success: true, type, config };
+    await this.saveDashboard(config, urlPath);
+    return { success: true, type, url_path: urlPath, config };
   }
 
   // ─── HomeKit ──────────────────────────────────────────────────
